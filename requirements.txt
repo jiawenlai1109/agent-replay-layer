@@ -1,0 +1,10 @@
+# Recovery layer for long-horizon agents: pure Python, no third-party runtime deps.
+# The harness is the only external package the code talks to, and it is invoked as
+# an installed CLI/service rather than imported.
+lh-harness==0.1.7
+
+# Not pip-installable, install separately and put it on PATH:
+#   npm install -g opencode-ai      # built and tested against 1.18.32
+# Model credentials belong in that CLI's own store (`opencode auth login`), never in
+# a command-line flag: the adapter that consumes them records the full command line
+# in run metadata.

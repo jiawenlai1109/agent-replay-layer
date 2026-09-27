@@ -1,0 +1,35 @@
+{
+  "source": "https://github.com/pypa/packaging/issues/577",
+  "title": "migrating from distlib.wheel: `packaging.utils.parse_wheel_filename` allows illegal platform tags",
+  "reporter": "asottile-sentry",
+  "created_at": "2022-07-18T17:56:33Z",
+  "closed_at": "2026-07-28T03:40:29Z",
+  "labels": [
+    "bug",
+    "packaging.utils"
+  ],
+  "fixing_pr": {
+    "number": 1351,
+    "title": "fix: reject invalid interpreter tags",
+    "state": "MERGED"
+  },
+  "closing_ref_ok": true,
+  "fetched_via": "MCP github issue_read method=get @ 2026-09-24 17:0x CST",
+  "known_leakage_in_issue_body": "报告人给了建议正则与 InvalidTag 异常设计 ⇒ 任务自带修法提示",
+  "task_md_body_sha256": "f87a4eb1d1861e6c60b9e33ca373c9a10fb074850a05c5e6f54206b40f0d5058",
+  "seed_source": "https://codeload.github.com/pypa/packaging/tar.gz/b62954b",
+  "oracle_source": "https://codeload.github.com/pypa/packaging/tar.gz/refs/pull/1351/head",
+  "verdict_measured_on_ubuntu2204_py310": {
+    "base_plus_base_tests": "298 passed in 0.52s",
+    "base_plus_pr_tests": "5 failed, 301 passed in 0.90s"
+  },
+  "measured_failing_node_ids": [
+    "tests/test_tags.py::TestParseTag::test_invalid_interpreter_raises[2-none-any]",
+    "tests/test_tags.py::TestParseTag::test_invalid_interpreter_raises[2.7.6-none-any]",
+    "tests/test_tags.py::TestParseTag::test_invalid_interpreter_raises[py+3-none-any]",
+    "tests/test_tags.py::TestParseTag::test_invalid_interpreter_raises[py3.2-none-any]",
+    "tests/test_utils.py::test_parse_wheel_invalid_filename[playlyfe-0.1.1-2.7.6-none-any.whl]"
+  ],
+  "framing_note": "框架头补了 PYTHONPATH=src：src/ 布局不带它就会 import 到 venv 里的修复前旧副本",
+  "framing_rule_added": "不得修改既有测试文件（promise 审计要求：守卫承诺必须先在原文声明）"
+}

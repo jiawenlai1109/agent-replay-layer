@@ -1,0 +1,106 @@
+[
+  {
+    "id": "c-oracle-named-test",
+    "predicate": "oracle_named_tests_pass",
+    "applies_to": "workspace",
+    "args": {
+      "oracle_dir": "ledger/A1-PACKAGING-577/oracle",
+      "overlay": [
+        "tests/test_tags.py",
+        "tests/test_utils.py"
+      ],
+      "node_ids": [
+        "tests/test_tags.py::TestParseTag::test_invalid_interpreter_raises[2-none-any]",
+        "tests/test_tags.py::TestParseTag::test_invalid_interpreter_raises[2.7.6-none-any]",
+        "tests/test_tags.py::TestParseTag::test_invalid_interpreter_raises[py+3-none-any]",
+        "tests/test_tags.py::TestParseTag::test_invalid_interpreter_raises[py3.2-none-any]",
+        "tests/test_utils.py::test_parse_wheel_invalid_filename[playlyfe-0.1.1-2.7.6-none-any.whl]"
+      ],
+      "cmd": [
+        "~/venvs/pkg/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "-p",
+        "no:cacheprovider"
+      ],
+      "env": {
+        "PYTHONPATH": "{workspace}/src"
+      },
+      "timeout": 600
+    },
+    "leak_probe": "invariant-oracle-verdict"
+  },
+  {
+    "id": "c-test-files-untouched",
+    "predicate": "files_unmodified",
+    "applies_to": "workspace",
+    "args": {
+      "sha256": {
+        "tests/test_tags.py": "a015559c1b895327d5e0170c2cd1e606914b4056d2baeafbaea61b2e9b07b539",
+        "tests/test_utils.py": "74ac2b0c4785428c8393ea27eea36749c90ae10a5b01b039b5c7a29b116f8a4c"
+      }
+    },
+    "leak_probe": "invariant-oracle-untouched"
+  },
+  {
+    "id": "c-differential-no-new-failure",
+    "predicate": "differential_no_new_failures",
+    "applies_to": "workspace",
+    "args": {
+      "oracle_dir": "ledger/A1-PACKAGING-577/oracle",
+      "overlay": [
+        "tests/test_tags.py",
+        "tests/test_utils.py"
+      ],
+      "files": [
+        "tests/test_tags.py",
+        "tests/test_utils.py"
+      ],
+      "cmd": [
+        "~/venvs/pkg/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "-p",
+        "no:cacheprovider"
+      ],
+      "env": {
+        "PYTHONPATH": "{workspace}/src"
+      },
+      "timeout": 600,
+      "repeats": 3,
+      "baseline_stable": [
+        "tests/test_tags.py::TestParseTag::test_invalid_interpreter_raises[2-none-any]",
+        "tests/test_tags.py::TestParseTag::test_invalid_interpreter_raises[2.7.6-none-any]",
+        "tests/test_tags.py::TestParseTag::test_invalid_interpreter_raises[py+3-none-any]",
+        "tests/test_tags.py::TestParseTag::test_invalid_interpreter_raises[py3.2-none-any]",
+        "tests/test_utils.py::test_parse_wheel_invalid_filename[playlyfe-0.1.1-2.7.6-none-any.whl]"
+      ],
+      "baseline_union": [
+        "tests/test_tags.py::TestParseTag::test_invalid_interpreter_raises[2-none-any]",
+        "tests/test_tags.py::TestParseTag::test_invalid_interpreter_raises[2.7.6-none-any]",
+        "tests/test_tags.py::TestParseTag::test_invalid_interpreter_raises[py+3-none-any]",
+        "tests/test_tags.py::TestParseTag::test_invalid_interpreter_raises[py3.2-none-any]",
+        "tests/test_utils.py::test_parse_wheel_invalid_filename[playlyfe-0.1.1-2.7.6-none-any.whl]"
+      ]
+    },
+    "leak_probe": "invariant-differential-regression",
+    "replaces": "c-oracle-file-fully-green",
+    "why": "整文件'零红'与'单次差分'都被实测否证：同一测试文件每次红的集合都不一样（structlog 每轮 18 红、三轮并集 28）。只认重复后稳定红，并与基线并集比。"
+  },
+  {
+    "id": "c-no-repeat-failure",
+    "predicate": "duplicate_round_failure",
+    "applies_to": "round",
+    "args": {},
+    "leak_probe": "invariant-repeat-failure"
+  },
+  {
+    "id": "c-no-silent-timeout",
+    "predicate": "silent_episode_failure",
+    "applies_to": "episode_metadata",
+    "args": {},
+    "leak_probe": "invariant-silent-timeout"
+  }
+]

@@ -1,0 +1,134 @@
+[
+  {
+    "id": "c-oracle-named-test",
+    "predicate": "oracle_named_tests_pass",
+    "applies_to": "workspace",
+    "args": {
+      "oracle_dir": "ledger/A3-ISORT-1815/oracle",
+      "overlay": [
+        "tests/unit/test_literal.py"
+      ],
+      "node_ids": [
+        "tests/unit/test_literal.py::test_black_quote_escapes_double_when_value_has_both_quotes",
+        "tests/unit/test_literal.py::test_black_quote_falls_back_to_repr_for_control_chars",
+        "tests/unit/test_literal.py::test_black_quote_prefers_double_quotes",
+        "tests/unit/test_literal.py::test_black_quote_uses_single_when_value_has_double_quote_only",
+        "tests/unit/test_literal.py::test_dict_non_string_values_use_repr",
+        "tests/unit/test_literal.py::test_dict_sorts_by_value_with_double_quotes",
+        "tests/unit/test_literal.py::test_list_preserves_bracket_type_tuple",
+        "tests/unit/test_literal.py::test_list_uses_double_quotes",
+        "tests/unit/test_literal.py::test_long_dict_wraps_vertical_hanging_indent",
+        "tests/unit/test_literal.py::test_long_list_wraps_vertical_hanging_indent",
+        "tests/unit/test_literal.py::test_set_bracket_and_quotes",
+        "tests/unit/test_literal.py::test_single_element_tuple_keeps_trailing_comma",
+        "tests/unit/test_literal.py::test_single_element_tuple_wraps_and_keeps_comma",
+        "tests/unit/test_literal.py::test_unique_tuple_dedupes_and_sorts",
+        "tests/unit/test_literal.py::test_value_assignment_dict",
+        "tests/unit/test_literal.py::test_value_assignment_unique_tuple",
+        "tests/unit/test_literal.py::test_wrap_without_trailing_comma"
+      ],
+      "cmd": [
+        "~/venvs/isort/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "-p",
+        "no:cacheprovider"
+      ],
+      "env": {},
+      "timeout": 600
+    },
+    "leak_probe": "invariant-oracle-verdict"
+  },
+  {
+    "id": "c-test-files-untouched",
+    "predicate": "files_unmodified",
+    "applies_to": "workspace",
+    "args": {
+      "sha256": {
+        "tests/unit/test_literal.py": "7bea1c3e677840242ee4465fa21666d3eb88832531f735b78066950cdcb569b7"
+      }
+    },
+    "leak_probe": "invariant-oracle-untouched"
+  },
+  {
+    "id": "c-differential-no-new-failure",
+    "predicate": "differential_no_new_failures",
+    "applies_to": "workspace",
+    "args": {
+      "oracle_dir": "ledger/A3-ISORT-1815/oracle",
+      "overlay": [
+        "tests/unit/test_literal.py"
+      ],
+      "files": [
+        "tests/unit/test_literal.py"
+      ],
+      "cmd": [
+        "~/venvs/isort/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "-p",
+        "no:cacheprovider"
+      ],
+      "env": {},
+      "timeout": 600,
+      "repeats": 3,
+      "baseline_stable": [
+        "tests/unit/test_literal.py::test_black_quote_escapes_double_when_value_has_both_quotes",
+        "tests/unit/test_literal.py::test_black_quote_falls_back_to_repr_for_control_chars",
+        "tests/unit/test_literal.py::test_black_quote_prefers_double_quotes",
+        "tests/unit/test_literal.py::test_black_quote_uses_single_when_value_has_double_quote_only",
+        "tests/unit/test_literal.py::test_dict_non_string_values_use_repr",
+        "tests/unit/test_literal.py::test_dict_sorts_by_value_with_double_quotes",
+        "tests/unit/test_literal.py::test_list_preserves_bracket_type_tuple",
+        "tests/unit/test_literal.py::test_list_uses_double_quotes",
+        "tests/unit/test_literal.py::test_long_dict_wraps_vertical_hanging_indent",
+        "tests/unit/test_literal.py::test_long_list_wraps_vertical_hanging_indent",
+        "tests/unit/test_literal.py::test_set_bracket_and_quotes",
+        "tests/unit/test_literal.py::test_single_element_tuple_keeps_trailing_comma",
+        "tests/unit/test_literal.py::test_single_element_tuple_wraps_and_keeps_comma",
+        "tests/unit/test_literal.py::test_unique_tuple_dedupes_and_sorts",
+        "tests/unit/test_literal.py::test_value_assignment_dict",
+        "tests/unit/test_literal.py::test_value_assignment_unique_tuple",
+        "tests/unit/test_literal.py::test_wrap_without_trailing_comma"
+      ],
+      "baseline_union": [
+        "tests/unit/test_literal.py::test_black_quote_escapes_double_when_value_has_both_quotes",
+        "tests/unit/test_literal.py::test_black_quote_falls_back_to_repr_for_control_chars",
+        "tests/unit/test_literal.py::test_black_quote_prefers_double_quotes",
+        "tests/unit/test_literal.py::test_black_quote_uses_single_when_value_has_double_quote_only",
+        "tests/unit/test_literal.py::test_dict_non_string_values_use_repr",
+        "tests/unit/test_literal.py::test_dict_sorts_by_value_with_double_quotes",
+        "tests/unit/test_literal.py::test_list_preserves_bracket_type_tuple",
+        "tests/unit/test_literal.py::test_list_uses_double_quotes",
+        "tests/unit/test_literal.py::test_long_dict_wraps_vertical_hanging_indent",
+        "tests/unit/test_literal.py::test_long_list_wraps_vertical_hanging_indent",
+        "tests/unit/test_literal.py::test_set_bracket_and_quotes",
+        "tests/unit/test_literal.py::test_single_element_tuple_keeps_trailing_comma",
+        "tests/unit/test_literal.py::test_single_element_tuple_wraps_and_keeps_comma",
+        "tests/unit/test_literal.py::test_unique_tuple_dedupes_and_sorts",
+        "tests/unit/test_literal.py::test_value_assignment_dict",
+        "tests/unit/test_literal.py::test_value_assignment_unique_tuple",
+        "tests/unit/test_literal.py::test_wrap_without_trailing_comma"
+      ]
+    },
+    "leak_probe": "invariant-differential-regression",
+    "replaces": "c-oracle-file-fully-green",
+    "why": "整文件'零红'与'单次差分'都被实测否证：同一测试文件每次红的集合都不一样（structlog 每轮 18 红、三轮并集 28）。只认重复后稳定红，并与基线并集比。"
+  },
+  {
+    "id": "c-no-repeat-failure",
+    "predicate": "duplicate_round_failure",
+    "applies_to": "round",
+    "args": {},
+    "leak_probe": "invariant-repeat-failure"
+  },
+  {
+    "id": "c-no-silent-timeout",
+    "predicate": "silent_episode_failure",
+    "applies_to": "episode_metadata",
+    "args": {},
+    "leak_probe": "invariant-silent-timeout"
+  }
+]

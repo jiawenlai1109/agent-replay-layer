@@ -1,0 +1,20 @@
+{
+  "base_task": "T-PIPE-01F",
+  "recipe": "C3-dup-key",
+  "injected_file": "data/orders.csv",
+  "description": "把一个 order_id 改成与另一行重复（行数与各组求和都不变）",
+  "root_cause": "c-csv-unique-key",
+  "expected_violations": [
+    "c-csv-unique-key"
+  ],
+  "detectable_at": "seed",
+  "last_invariant_holding_step": null,
+  "agent_fix_required": "消除重复主键",
+  "note": "",
+  "seed_file_hashes": {
+    "before_sha256": "6b8608a8484214e8dcd14c2a3a729a4b2f62a644f8a76b19769f0292fd6e6caa",
+    "after_sha256": "c60bba33a4b9df63feeb5a4ff862e3f3803600e5fe4a465b4ad4a78c83262b66"
+  },
+  "task_text_unchanged": true,
+  "told_to_agent": false
+}

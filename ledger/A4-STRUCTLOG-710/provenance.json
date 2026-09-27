@@ -1,0 +1,33 @@
+{
+  "source": "https://github.com/hynek/structlog/issues/710",
+  "title": "Thread name CallsiteParameterAdder parameter doesn't work in async methods",
+  "reporter": "hynek (仓库 owner)",
+  "created_at": "2025-03-08T15:25:28Z",
+  "closed_at": "2026-05-10T16:13:49Z",
+  "labels": [
+    "bug"
+  ],
+  "fixing_pr": {
+    "number": 805,
+    "title": "Fix thread name CallsiteParameterAdder in async methods (issue #710)",
+    "state": "MERGED"
+  },
+  "closing_ref_ok": true,
+  "fetched_via": "MCP github issue_read method=get @ 2026-09-24 17:0x CST",
+  "scoping_judgment": "base 树在 py3.10 上跑整个 test_processors.py 有 15 项既有 e2e 失败（与本 issue 无关），因此判据与回归检查都用 `-k async` 限定。这个限定是我做的判断，不是事实，对外必须公开；否则就是把选择偏差藏进判据。",
+  "known_leakage_in_issue_body": "报告人给了完整可复现脚本，并猜测了修法方向（把 thread/task 对象传进 event_dict）",
+  "task_md_body_sha256": "72be992584316a79acf8b487a89541a60b6d20facc508c761e37daf89450a37c",
+  "seed_source": "https://codeload.github.com/hynek/structlog/tar.gz/c6e7cad",
+  "oracle_source": "https://codeload.github.com/hynek/structlog/tar.gz/refs/pull/805/head",
+  "verdict_measured_on_ubuntu2204_py310": {
+    "base_plus_base_tests": "2 passed, 171 deselected, 2 warnings in 0.07s",
+    "base_plus_pr_tests": "3 failed, 171 deselected, 2 warnings in 0.15s"
+  },
+  "measured_failing_node_ids": [
+    "tests/processors/test_processors.py::TestCallsiteParameterAdder::test_async[AsyncBoundLogger-info]",
+    "tests/processors/test_processors.py::TestCallsiteParameterAdder::test_async[BoundLogger-ainfo]",
+    "tests/processors/test_processors.py::TestCallsiteParameterAdder::test_async_native_logger"
+  ],
+  "framing_note": "框架头补了 PYTHONPATH=src：src/ 布局不带它就会 import 到 venv 里的修复前旧副本",
+  "framing_rule_added": "不得修改既有测试文件（promise 审计要求：守卫承诺必须先在原文声明）"
+}

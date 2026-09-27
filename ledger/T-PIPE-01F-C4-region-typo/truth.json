@@ -1,0 +1,20 @@
+{
+  "base_task": "T-PIPE-01F",
+  "recipe": "C4-region-typo",
+  "injected_file": "data/orders.csv",
+  "description": "把一个 region 值改成 'East'（大小写不符，破坏分组键集合）",
+  "root_cause": "c-summary-recompute",
+  "expected_violations": [
+    "c-summary-recompute"
+  ],
+  "detectable_at": "seed",
+  "last_invariant_holding_step": null,
+  "agent_fix_required": "纠正分组键值",
+  "note": "不级联到测试：既有测试是动态从 csv 求和的，count 之和仍为 12、sum 仍与 csv 一致，只有'派生结果与源数据的键集合是否相同'这条不变量看得到它 ⇒ 谓词密度决定可定位性的实例",
+  "seed_file_hashes": {
+    "before_sha256": "6b8608a8484214e8dcd14c2a3a729a4b2f62a644f8a76b19769f0292fd6e6caa",
+    "after_sha256": "9f360887bd210c2d3eb1c6dc4d4cb1ae2caf22b9089932643f34b6419d9aebb1"
+  },
+  "task_text_unchanged": true,
+  "told_to_agent": false
+}

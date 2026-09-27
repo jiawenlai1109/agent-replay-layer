@@ -1,0 +1,21 @@
+{
+  "base_task": "T-PIPE-01F",
+  "recipe": "C2-stale-summary",
+  "injected_file": "report/summary.json",
+  "description": "预置一个结构正确但数值与 csv 不符的派生结果（陈旧产物漂移）",
+  "root_cause": "c-summary-recompute",
+  "expected_violations": [
+    "c-suite-green",
+    "c-summary-recompute"
+  ],
+  "detectable_at": "seed",
+  "last_invariant_holding_step": null,
+  "agent_fix_required": "重新生成 summary.json，使派生值与源数据一致",
+  "note": "",
+  "seed_file_hashes": {
+    "before_sha256": "197ce4b78928504fc3016eb2fb31672e92069fb0ef6fc9d07082a3d4c9f8ba10",
+    "after_sha256": "6cedacdda1b9211e91086082f8da4c20dc5a32ce155842d68d19250003703495"
+  },
+  "task_text_unchanged": true,
+  "told_to_agent": false
+}

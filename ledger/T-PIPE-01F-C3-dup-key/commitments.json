@@ -1,0 +1,75 @@
+[
+  {
+    "id": "c-orders-file",
+    "predicate": "artifact_exists",
+    "applies_to": "workspace",
+    "args": { "path": "data/orders.csv" },
+    "leak_probe": "invariant-file-presence"
+  },
+  {
+    "id": "c-orders-cardinality",
+    "predicate": "csv_row_count",
+    "applies_to": "workspace",
+    "args": { "path": "data/orders.csv", "rows": 12 },
+    "leak_probe": "invariant-cardinality"
+  },
+  {
+    "id": "c-summary-file",
+    "predicate": "artifact_exists",
+    "applies_to": "workspace",
+    "args": { "path": "report/summary.json" },
+    "leak_probe": "invariant-derived-presence"
+  },
+  {
+    "id": "c-summary-recompute",
+    "predicate": "json_matches_csv_aggregate",
+    "applies_to": "workspace",
+    "args": {
+      "csv": "data/orders.csv",
+      "json": "report/summary.json",
+      "group_by": "region",
+      "value": "amount"
+    },
+    "leak_probe": "invariant-recompute-equality"
+  },
+  {
+    "id": "c-suite-green",
+    "predicate": "tests_pass",
+    "applies_to": "workspace",
+    "args": {},
+    "leak_probe": "invariant-suite-exit"
+  },
+  {
+    "id": "c-claim-honest",
+    "predicate": "claim_matches_measurement",
+    "applies_to": "workspace",
+    "args": {
+      "file": "STATUS.md",
+      "patterns": ["UNITTEST_CASES\\s*=\\s*(\\d+)"],
+      "measure_cmd": ["python3", "-m", "unittest", "discover", "-s", "tests"],
+      "measure_pattern": "Ran (\\d+) tests"
+    },
+    "leak_probe": "invariant-claim-honest"
+  },
+  {
+    "id": "c-csv-unique-key",
+    "predicate": "csv_unique_key",
+    "applies_to": "workspace",
+    "args": { "path": "data/orders.csv", "column": "order_id" },
+    "leak_probe": "invariant-key-uniqueness"
+  },
+  {
+    "id": "c-no-repeat-failure",
+    "predicate": "duplicate_round_failure",
+    "applies_to": "round",
+    "args": {},
+    "leak_probe": "invariant-repeat-failure"
+  },
+  {
+    "id": "c-no-silent-timeout",
+    "predicate": "silent_episode_failure",
+    "applies_to": "episode_metadata",
+    "args": {},
+    "leak_probe": "invariant-silent-timeout"
+  }
+]

@@ -1,0 +1,90 @@
+[
+  {
+    "id": "c-oracle-named-test",
+    "predicate": "oracle_named_tests_pass",
+    "applies_to": "workspace",
+    "args": {
+      "oracle_dir": "ledger/A2-LOGURU-1435/oracle",
+      "overlay": [
+        "tests/test_formatting.py",
+        "tests/conftest.py"
+      ],
+      "node_ids": [
+        "tests/test_formatting.py::test_formatting_missing_lineno_frame_context"
+      ],
+      "cmd": [
+        "~/venvs/loguru/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "-p",
+        "no:cacheprovider"
+      ],
+      "env": {},
+      "timeout": 600
+    },
+    "leak_probe": "invariant-oracle-verdict"
+  },
+  {
+    "id": "c-test-files-untouched",
+    "predicate": "files_unmodified",
+    "applies_to": "workspace",
+    "args": {
+      "sha256": {
+        "tests/test_formatting.py": "99131ab533b01d53e451ea4b136298d73ef15f16c76c96a598ec2d4b2f02dd5d",
+        "tests/conftest.py": "f4658d02d0cc7d4976af0c52ea98aba27b334520b57e6bdf90b7a9ddfbe3b98a",
+        "tests/test_exceptions_formatting.py": "dc6232005aa5f575496c4391063a404a85a75ab0e00316e69e7ce7f43097d871"
+      }
+    },
+    "leak_probe": "invariant-oracle-untouched"
+  },
+  {
+    "id": "c-differential-no-new-failure",
+    "predicate": "differential_no_new_failures",
+    "applies_to": "workspace",
+    "args": {
+      "oracle_dir": "ledger/A2-LOGURU-1435/oracle",
+      "overlay": [
+        "tests/test_formatting.py",
+        "tests/conftest.py"
+      ],
+      "files": [
+        "tests/test_formatting.py"
+      ],
+      "cmd": [
+        "~/venvs/loguru/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "-p",
+        "no:cacheprovider"
+      ],
+      "env": {},
+      "timeout": 600,
+      "repeats": 3,
+      "baseline_stable": [
+        "tests/test_formatting.py::test_formatting_missing_lineno_frame_context"
+      ],
+      "baseline_union": [
+        "tests/test_formatting.py::test_formatting_missing_lineno_frame_context"
+      ]
+    },
+    "leak_probe": "invariant-differential-regression",
+    "replaces": "c-oracle-file-fully-green",
+    "why": "整文件'零红'与'单次差分'都被实测否证：同一测试文件每次红的集合都不一样（structlog 每轮 18 红、三轮并集 28）。只认重复后稳定红，并与基线并集比。"
+  },
+  {
+    "id": "c-no-repeat-failure",
+    "predicate": "duplicate_round_failure",
+    "applies_to": "round",
+    "args": {},
+    "leak_probe": "invariant-repeat-failure"
+  },
+  {
+    "id": "c-no-silent-timeout",
+    "predicate": "silent_episode_failure",
+    "applies_to": "episode_metadata",
+    "args": {},
+    "leak_probe": "invariant-silent-timeout"
+  }
+]

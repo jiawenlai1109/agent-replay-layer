@@ -1,0 +1,46 @@
+{
+  "source": "https://github.com/PyCQA/isort/issues/1815",
+  "title": "Tuple sorting doesn't consider profile",
+  "reporter": "kasium",
+  "created_at": "2021-09-24T09:47:05Z",
+  "closed_at": "2026-07-12T20:33:45Z",
+  "labels": [
+    "bug"
+  ],
+  "fixing_pr": {
+    "number": 2576,
+    "title": "未取 PR 标题",
+    "state": "MERGED"
+  },
+  "closing_ref_ok": false,
+  "closing_ref_mismatch": "issue 的 closed_by_pull_requests 只引用 PR 2535 与 2573（两条均 CLOSED 未合并），本任务用的 PR 2576 不在其中；依据仅为 PR 自述 'Resolves: #2280, #1815' + 实测红绿对。⇒ 不得用于任何'外部权威确认'的表述。",
+  "fetched_via": "MCP github issue_read method=get @ 2026-09-24 17:0x CST",
+  "known_leakage_in_issue_body": "报告人直接贴了 black 的期望输出格式",
+  "task_md_body_sha256": "e902badbefb07c8d6614cfca51b7e6cf8cbadc6b7fe264193fed359de335c770",
+  "seed_source": "https://codeload.github.com/PyCQA/isort/tar.gz/fd8bd07",
+  "oracle_source": "https://codeload.github.com/PyCQA/isort/tar.gz/refs/pull/2576/head",
+  "verdict_measured_on_ubuntu2204_py310": {
+    "base_plus_base_tests": "7 passed in 0.05s",
+    "base_plus_pr_tests": "17 failed, 7 passed in 0.18s"
+  },
+  "measured_failing_node_ids": [
+    "tests/unit/test_literal.py::test_black_quote_escapes_double_when_value_has_both_quotes",
+    "tests/unit/test_literal.py::test_black_quote_falls_back_to_repr_for_control_chars",
+    "tests/unit/test_literal.py::test_black_quote_prefers_double_quotes",
+    "tests/unit/test_literal.py::test_black_quote_uses_single_when_value_has_double_quote_only",
+    "tests/unit/test_literal.py::test_dict_non_string_values_use_repr",
+    "tests/unit/test_literal.py::test_dict_sorts_by_value_with_double_quotes",
+    "tests/unit/test_literal.py::test_list_preserves_bracket_type_tuple",
+    "tests/unit/test_literal.py::test_list_uses_double_quotes",
+    "tests/unit/test_literal.py::test_long_dict_wraps_vertical_hanging_indent",
+    "tests/unit/test_literal.py::test_long_list_wraps_vertical_hanging_indent",
+    "tests/unit/test_literal.py::test_set_bracket_and_quotes",
+    "tests/unit/test_literal.py::test_single_element_tuple_keeps_trailing_comma",
+    "tests/unit/test_literal.py::test_single_element_tuple_wraps_and_keeps_comma",
+    "tests/unit/test_literal.py::test_unique_tuple_dedupes_and_sorts",
+    "tests/unit/test_literal.py::test_value_assignment_dict",
+    "tests/unit/test_literal.py::test_value_assignment_unique_tuple",
+    "tests/unit/test_literal.py::test_wrap_without_trailing_comma"
+  ],
+  "framing_rule_added": "不得修改既有测试文件（promise 审计要求：守卫承诺必须先在原文声明）"
+}

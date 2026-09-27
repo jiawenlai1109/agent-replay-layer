@@ -1,0 +1,8 @@
+{
+  "task_id": "N1-README-REWRITE",
+  "formalizable": false,
+  "reason": "判据是「更有说服力」，无法写成不依赖措辞的确定性检查",
+  "kept_commitments": "只有两条循环健康传感器（与任务内容无关，故仍可确定性判定）",
+  "expected_result": "机制不适用；若在此类任务上强行加措辞型承诺，就是在自证",
+  "role": "负对照（不适用样本），各跑 1 次，不进 3x3 矩阵"
+}

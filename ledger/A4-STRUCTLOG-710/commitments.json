@@ -1,0 +1,134 @@
+[
+  {
+    "id": "c-oracle-named-test",
+    "predicate": "oracle_named_tests_pass",
+    "applies_to": "workspace",
+    "args": {
+      "oracle_dir": "ledger/A4-STRUCTLOG-710/oracle",
+      "overlay": [
+        "tests/processors/test_processors.py",
+        "tests/conftest.py"
+      ],
+      "node_ids": [
+        "tests/processors/test_processors.py::TestCallsiteParameterAdder::test_async[AsyncBoundLogger-info]",
+        "tests/processors/test_processors.py::TestCallsiteParameterAdder::test_async[BoundLogger-ainfo]",
+        "tests/processors/test_processors.py::TestCallsiteParameterAdder::test_async_native_logger"
+      ],
+      "cmd": [
+        "~/venvs/structlog/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "-p",
+        "no:cacheprovider"
+      ],
+      "env": {
+        "PYTHONPATH": "{workspace}/src"
+      },
+      "timeout": 600
+    },
+    "leak_probe": "invariant-oracle-verdict"
+  },
+  {
+    "id": "c-test-files-untouched",
+    "predicate": "files_unmodified",
+    "applies_to": "workspace",
+    "args": {
+      "sha256": {
+        "tests/processors/test_processors.py": "77286b1ef2cbd3e981439d8132a38b91f8d9763e564a7ac42d8282a823b23da9",
+        "tests/conftest.py": "e31c6e4e7b3bb1c6396dcf6613e83a97486844b39d1c3cfd5b13d4a8ac6ff223"
+      }
+    },
+    "leak_probe": "invariant-oracle-untouched"
+  },
+  {
+    "id": "c-differential-no-new-failure",
+    "predicate": "differential_no_new_failures",
+    "applies_to": "workspace",
+    "args": {
+      "oracle_dir": "ledger/A4-STRUCTLOG-710/oracle",
+      "overlay": [
+        "tests/processors/test_processors.py",
+        "tests/conftest.py"
+      ],
+      "files": [
+        "tests/processors/test_processors.py"
+      ],
+      "cmd": [
+        "~/venvs/structlog/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "-p",
+        "no:cacheprovider"
+      ],
+      "env": {
+        "PYTHONPATH": "{workspace}/src"
+      },
+      "timeout": 600,
+      "repeats": 3,
+      "baseline_stable": [
+        "tests/processors/test_processors.py::TestCallsiteParameterAdder::test_async[AsyncBoundLogger-info]",
+        "tests/processors/test_processors.py::TestCallsiteParameterAdder::test_async[BoundLogger-ainfo]",
+        "tests/processors/test_processors.py::TestCallsiteParameterAdder::test_async_native_logger",
+        "tests/processors/test_processors.py::TestCallsiteParameterAdder::test_e2e[common-with-pre-logging-None]",
+        "tests/processors/test_processors.py::TestCallsiteParameterAdder::test_e2e[common-with-pre-logging-parameter_strings39]",
+        "tests/processors/test_processors.py::TestCallsiteParameterAdder::test_e2e[common-without-pre-logging-None]",
+        "tests/processors/test_processors.py::TestCallsiteParameterAdder::test_e2e[common-without-pre-logging-parameter_strings11]",
+        "tests/processors/test_processors.py::TestCallsiteParameterAdder::test_e2e[everywhere-logging-None]",
+        "tests/processors/test_processors.py::TestCallsiteParameterAdder::test_e2e[everywhere-logging-parameter_strings95]",
+        "tests/processors/test_processors.py::TestCallsiteParameterAdder::test_e2e[shared-logging-None]",
+        "tests/processors/test_processors.py::TestCallsiteParameterAdder::test_e2e[shared-logging-parameter_strings67]",
+        "tests/processors/test_processors.py::TestCallsiteParameterAdder::test_processor[logging-None]",
+        "tests/processors/test_processors.py::TestCallsiteParameterAdder::test_processor[logging-parameter_strings11]"
+      ],
+      "baseline_union": [
+        "tests/processors/test_processors.py::TestCallsiteParameterAdder::test_async[AsyncBoundLogger-info]",
+        "tests/processors/test_processors.py::TestCallsiteParameterAdder::test_async[BoundLogger-ainfo]",
+        "tests/processors/test_processors.py::TestCallsiteParameterAdder::test_async_native_logger",
+        "tests/processors/test_processors.py::TestCallsiteParameterAdder::test_e2e[common-with-pre-logging-None]",
+        "tests/processors/test_processors.py::TestCallsiteParameterAdder::test_e2e[common-with-pre-logging-parameter_strings34]",
+        "tests/processors/test_processors.py::TestCallsiteParameterAdder::test_e2e[common-with-pre-logging-parameter_strings35]",
+        "tests/processors/test_processors.py::TestCallsiteParameterAdder::test_e2e[common-with-pre-logging-parameter_strings37]",
+        "tests/processors/test_processors.py::TestCallsiteParameterAdder::test_e2e[common-with-pre-logging-parameter_strings39]",
+        "tests/processors/test_processors.py::TestCallsiteParameterAdder::test_e2e[common-without-pre-logging-None]",
+        "tests/processors/test_processors.py::TestCallsiteParameterAdder::test_e2e[common-without-pre-logging-parameter_strings11]",
+        "tests/processors/test_processors.py::TestCallsiteParameterAdder::test_e2e[common-without-pre-logging-parameter_strings6]",
+        "tests/processors/test_processors.py::TestCallsiteParameterAdder::test_e2e[common-without-pre-logging-parameter_strings7]",
+        "tests/processors/test_processors.py::TestCallsiteParameterAdder::test_e2e[common-without-pre-logging-parameter_strings9]",
+        "tests/processors/test_processors.py::TestCallsiteParameterAdder::test_e2e[everywhere-logging-None]",
+        "tests/processors/test_processors.py::TestCallsiteParameterAdder::test_e2e[everywhere-logging-parameter_strings90]",
+        "tests/processors/test_processors.py::TestCallsiteParameterAdder::test_e2e[everywhere-logging-parameter_strings91]",
+        "tests/processors/test_processors.py::TestCallsiteParameterAdder::test_e2e[everywhere-logging-parameter_strings93]",
+        "tests/processors/test_processors.py::TestCallsiteParameterAdder::test_e2e[everywhere-logging-parameter_strings95]",
+        "tests/processors/test_processors.py::TestCallsiteParameterAdder::test_e2e[shared-logging-None]",
+        "tests/processors/test_processors.py::TestCallsiteParameterAdder::test_e2e[shared-logging-parameter_strings62]",
+        "tests/processors/test_processors.py::TestCallsiteParameterAdder::test_e2e[shared-logging-parameter_strings63]",
+        "tests/processors/test_processors.py::TestCallsiteParameterAdder::test_e2e[shared-logging-parameter_strings65]",
+        "tests/processors/test_processors.py::TestCallsiteParameterAdder::test_e2e[shared-logging-parameter_strings67]",
+        "tests/processors/test_processors.py::TestCallsiteParameterAdder::test_processor[logging-None]",
+        "tests/processors/test_processors.py::TestCallsiteParameterAdder::test_processor[logging-parameter_strings11]",
+        "tests/processors/test_processors.py::TestCallsiteParameterAdder::test_processor[logging-parameter_strings6]",
+        "tests/processors/test_processors.py::TestCallsiteParameterAdder::test_processor[logging-parameter_strings7]",
+        "tests/processors/test_processors.py::TestCallsiteParameterAdder::test_processor[logging-parameter_strings9]"
+      ]
+    },
+    "leak_probe": "invariant-differential-regression",
+    "replaces": "c-oracle-file-fully-green",
+    "why": "整文件'零红'与'单次差分'都被实测否证：同一测试文件每次红的集合都不一样（structlog 每轮 18 红、三轮并集 28）。只认重复后稳定红，并与基线并集比。"
+  },
+  {
+    "id": "c-no-repeat-failure",
+    "predicate": "duplicate_round_failure",
+    "applies_to": "round",
+    "args": {},
+    "leak_probe": "invariant-repeat-failure"
+  },
+  {
+    "id": "c-no-silent-timeout",
+    "predicate": "silent_episode_failure",
+    "applies_to": "episode_metadata",
+    "args": {},
+    "leak_probe": "invariant-silent-timeout"
+  }
+]

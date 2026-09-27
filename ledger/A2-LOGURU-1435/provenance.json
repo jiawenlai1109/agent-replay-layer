@@ -1,0 +1,30 @@
+{
+  "source": "https://github.com/Delgan/loguru/issues/1435",
+  "title": "Crash while formatting exceptions when a traceback frame has tb_lineno=None (TypeError in linecache.getline())",
+  "reporter": "Jonas1312",
+  "created_at": "2026-02-06T07:12:22Z",
+  "closed_at": "2026-02-22T00:16:31Z",
+  "labels": [
+    "bug"
+  ],
+  "fixing_pr": {
+    "number": 1442,
+    "title": "Fix possible internal error if \"f_lineno\" is None",
+    "state": "MERGED"
+  },
+  "closing_ref_ok": true,
+  "fetched_via": "MCP github issue_read method=get @ 2026-09-24 17:0x CST",
+  "known_leakage_in_issue_body": "报告人有 'Suggested fix' 段，点名在 _better_exceptions.py 里守卫 linecache.getline 的入参",
+  "note": "test_exceptions_formatting.py 走子进程、跨 Python 版本输出不稳（子任务警告），故只纳入'不得改动'守卫，不作为判据",
+  "task_md_body_sha256": "7f335fb9b65733372b6af4c2b989165db85b025b1ef0a539da95e94bbc44e261",
+  "seed_source": "https://codeload.github.com/Delgan/loguru/tar.gz/d33e85e",
+  "oracle_source": "https://codeload.github.com/Delgan/loguru/tar.gz/refs/pull/1442/head",
+  "verdict_measured_on_ubuntu2204_py310": {
+    "base_plus_base_tests": "82 passed in 0.62s",
+    "base_plus_pr_tests": "1 failed, 82 passed in 0.72s"
+  },
+  "measured_failing_node_ids": [
+    "tests/test_formatting.py::test_formatting_missing_lineno_frame_context"
+  ],
+  "framing_rule_added": "不得修改既有测试文件（promise 审计要求：守卫承诺必须先在原文声明）"
+}
