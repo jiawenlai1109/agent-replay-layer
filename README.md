@@ -4,7 +4,7 @@ A recovery layer for long-horizon agents. When a run drifts, this finds the step
 
 Built on top of [AMAP-ML/LongHorizon-Harness](https://github.com/AMAP-ML/LongHorizon-Harness) (used as a dependency, not a fork). The harness still orchestrates the run; this reads its durable artifacts, decides when a run has gone wrong, and drives stop/resume through the harness control API.
 
-**Status**: the mechanism and its measurement apparatus are implemented and covered by offline tests. Measured results, the false-positive audit, and the license file are pending, see [What is not here yet](#what-is-not-here-yet).
+**Status**: the mechanism and its measurement apparatus are implemented and covered by offline tests. Measured results and the false-positive audit are pending, see [What is not here yet](#what-is-not-here-yet). This layer is MIT licensed (see `LICENSE`); the upstream harness's own licence is still unconfirmed, which is a separate question and is noted below.
 
 ## Why
 
@@ -126,7 +126,7 @@ the pipeline seeds are ours, the real-bug seeds are upstream trees rebuilt by
 - A false-positive rate for the online gate. The audit exists; the sample base does not yet support a rate, so none is claimed.
 - Injection recipes for real-bug repositories, which is what is needed before any claim transfers from synthetic pipeline tasks to repository tasks.
 - A second agent CLI adapter. Until one exists, "harness and CLI independent" is an architectural claim, not a measured one.
-- A license file. The upstream package metadata leaves the licence unconfirmed, so nothing here states one. Check this section again before reuse.
+- Confirmation of the **upstream** licence. This repository is MIT, but `lh-harness` leaves its PyPI licence field empty while its badge claims MIT, so the dependency's terms are still unverified. Resolve before any redistribution of this code as a product.
 
 ## Upstream
 
