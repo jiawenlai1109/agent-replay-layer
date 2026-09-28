@@ -32,7 +32,10 @@ STORE_VERSION = 2
 # How expensive a sensor is decides how often it may run. A per-step pytest is
 # 20 s x 232 steps, which is not "step granularity" but a new bottleneck. Cheap
 # sensors run at every write checkpoint; heavy ones only once per round boundary.
-HEAVY = {"tests_pass", "oracle_named_tests_pass", "differential_no_new_failures"}
+HEAVY = {"tests_pass", "oracle_named_tests_pass", "differential_no_new_failures",
+         # A scope check hashes the whole tree, and a repo workspace is thousands of
+         # files; sampled at every checkpoint it would dominate the run's wall clock.
+         "diff_touches_only_allowed_paths"}
 
 # A red on a product-bearing predicate means the wrong thing is already on disk,
 # so reminding the agent cannot undo it — only rewinding can.

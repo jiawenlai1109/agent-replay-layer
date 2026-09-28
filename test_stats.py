@@ -72,5 +72,28 @@ class TestDescribe(unittest.TestCase):
         self.assertEqual(stats.describe(rows, "C-B1", lambda r: r["ok"]), (0, 0))
 
 
+class TestZeroSuccessBound(unittest.TestCase):
+    """A rate observed zero times still has a bound, and it is not zero."""
+
+    def test_one_trial_leaves_almost_everything_open(self) -> None:
+        # one trial with no event bounds the rate only at 95%: "observed zero
+        # once" is nearly no evidence, which is the point of printing this bound
+        self.assertAlmostEqual(stats.zero_success_upper_bound(1), 0.95, places=12)
+
+    def test_two_trials_is_one_minus_sqrt_alpha(self) -> None:
+        self.assertAlmostEqual(stats.zero_success_upper_bound(2), 1 - 0.05 ** 0.5, places=12)
+        self.assertAlmostEqual(stats.zero_success_upper_bound(2), 0.776393, places=5)
+
+    def test_shrinks_with_trials_and_matches_rule_of_three_when_large(self) -> None:
+        bounds = [stats.zero_success_upper_bound(n) for n in (5, 20, 33, 100)]
+        self.assertEqual(bounds, sorted(bounds, reverse=True))
+        self.assertAlmostEqual(bounds[-1], 3 / 100, delta=0.002)
+
+    def test_refuses_a_non_positive_trial_count(self) -> None:
+        for n in (0, -3):
+            with self.assertRaises(ValueError):
+                stats.zero_success_upper_bound(n)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

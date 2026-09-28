@@ -57,12 +57,13 @@ Every arm is dispatched through the same entry point (`POST /api/runs`). Runs cr
 | File | Role |
 |---|---|
 | `sbr_paths.py` | single owner of every filesystem location; all overridable by environment |
-| `predicates.py` | 11 deterministic checks, one signature: `run(args) -> {status, expected, actual, cmd_line}` |
+| `predicates.py` | 14 deterministic checks, one signature: `run(args) -> {status, expected, actual, cmd_line}` |
 | `taskset.py`, `tasks/`, `ledger/` | task cards the agent reads, and the commitment ledger it does not |
 | `tap.py` | artifact reader: provider-step timeline, step alignment, cross-attempt attribution |
 | `snapshot.py` | replays workspace state from the seed, so a rollback has somewhere to land |
 | `recover.py` | verdict store, three-tier locator, escalation ladder, directive template |
 | `audit.py`, `audit_ledger_promises.py` | offline re-audit; checks that no promise depends on wording the task never required |
+| `fp_audit.py` | the false-positive audit: re-scores every collected run with the current predicates, and only reports a rate where a truth independent of the sensor exists |
 | `arm_c.py` | the C-arm driver: gate, inject, halt, rewind, resume, cost sampling |
 | `runner.py` | run dispatch and control-API client |
 | `batch*.sh`, `restart_api.sh` | serial sweeps with a credential preflight; service restart |
@@ -99,11 +100,12 @@ python3 arm_c.py --task T-PIPE-01F-C1-csv-short --recipe C1-csv-short \
     --arm C-REC --rep 1 --inject-after 6 --max-rounds 4 --minutes 12
 python3 pair_report.py                           # per-sample table plus paired comparison
 python3 cost_to_success.py                       # cost attribution, live and offline
+python3 fp_audit.py --arm all --repeat 3         # false-positive audit over the collected runs
 ```
 
 All tests are offline: no provider call, no cost. The suites that evaluate a predicate
 run it as a subprocess against a real interpreter, so they assume Linux; off Linux they
-skip rather than report a false failure. Verified state: 124 tests, all green on
+skip rather than report a false failure. Verified state: 144 tests, all green on
 Ubuntu 22.04.
 
 Fixtures are split by what can be redistributed, see [tasks/README.md](tasks/README.md):
@@ -118,12 +120,13 @@ the pipeline seeds are ours, the real-bug seeds are upstream trees rebuilt by
 - **External side effects do not roll back.** Requests already sent and remote writes already landed are outside any local snapshot, and a rollback that ignores them creates false confidence.
 - **A promise must be formalizable to be latched.** Acceptance criteria that cannot be written as a predicate fall outside the mechanism.
 - **A halt is not free money.** On the samples where cost was sampled live at both the detection and the halt, the spend between them was zero, which means early interception avoids no completed work; the savings argument rests on skipped rounds and on side-effect risk instead.
+- **The online detector is an experiment instrument, not a production gate.** `arm_c.py` treats a red as drift only after the step where it injected the defect itself, which is the one piece of information a real deployment does not have. A deployable trigger has to read "a red that is new relative to the last green reading, on a promise whose paths are already in play"; the second half exists in `recover.py` and the first half is not wired into the sensor tick.
 - **Small, repeated templates.** Sweeps are cheap in dollars and expensive in wall-clock on a 2-core box, so breadth is limited until the report says otherwise.
 
 ## What is not here yet
 
 - Measured result tables with sample counts and exact tests. They will land with the report, together with the reproduction records the numbers came from.
-- A false-positive rate for the online gate. The audit exists; the sample base does not yet support a rate, so none is claimed.
+- A false-positive rate for the online gate. `fp_audit.py` computes it and prints a bound rather than a bare "none observed", but it reports a rate only over the universe where the truth does not come from the sensor itself. The numbers belong with the report.
 - Injection recipes for real-bug repositories, which is what is needed before any claim transfers from synthetic pipeline tasks to repository tasks.
 - A second agent CLI adapter. Until one exists, "harness and CLI independent" is an architectural claim, not a measured one.
 - Confirmation of the **upstream** licence. This repository is MIT, but `lh-harness` leaves its PyPI licence field empty while its badge claims MIT, so the dependency's terms are still unverified. Resolve before any redistribution of this code as a product.

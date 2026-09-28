@@ -260,5 +260,162 @@ class TestTildeExpansion(unittest.TestCase):
         self.assertEqual(got["status"], "pass", got["actual"])
 
 
+import shutil
+
+from predicates import csv_column_exists, csv_value_range, diff_touches_only_allowed_paths
+
+GOOD_CSV = "order_id,region,amount\n" + "".join(
+    f"{i},{'east' if i % 2 else 'west'},{100 + i}\n" for i in range(1, 13)
+)
+
+
+class TestCsvColumnExists(unittest.TestCase):
+    """Schema coverage: the value predicates cannot see a renamed column."""
+
+    def setUp(self) -> None:
+        import tempfile
+
+        self.tmp = Path(tempfile.mkdtemp())
+        (self.tmp / "data").mkdir()
+
+    def _write(self, text: str) -> None:
+        (self.tmp / "data" / "orders.csv").write_text(text, encoding="utf-8")
+
+    def test_pass_when_header_has_every_column(self) -> None:
+        self._write(GOOD_CSV)
+        got = csv_column_exists({"workspace": str(self.tmp), "path": "data/orders.csv",
+                                 "columns": ["order_id", "region", "amount"]})
+        self.assertEqual(got["status"], "pass", got["actual"])
+
+    def test_fail_when_a_column_is_renamed(self) -> None:
+        self._write(GOOD_CSV.replace("region", "area", 1))
+        got = csv_column_exists({"workspace": str(self.tmp), "path": "data/orders.csv",
+                                 "columns": ["region"]})
+        self.assertEqual(got["status"], "fail", got["actual"])
+        self.assertIn("region", got["actual"])
+
+    def test_schema_damage_is_invisible_to_the_value_predicates(self) -> None:
+        from predicates import csv_row_count, csv_unique_key
+
+        self._write(GOOD_CSV.replace("region", "area", 1))
+        args = {"workspace": str(self.tmp), "path": "data/orders.csv"}
+        self.assertEqual(csv_row_count({**args, "rows": 12})["status"], "pass")
+        self.assertEqual(csv_unique_key({**args, "column": "order_id"})["status"], "pass")
+        self.assertEqual(csv_column_exists({**args, "columns": ["region"]})["status"], "fail")
+
+    def test_na_when_file_absent(self) -> None:
+        got = csv_column_exists({"workspace": str(self.tmp), "path": "data/orders.csv",
+                                 "columns": ["order_id"]})
+        self.assertEqual(got["status"], "na", got["actual"])
+
+
+class TestCsvValueRange(unittest.TestCase):
+    def setUp(self) -> None:
+        import tempfile
+
+        self.tmp = Path(tempfile.mkdtemp())
+        (self.tmp / "data").mkdir()
+        (self.tmp / "data" / "orders.csv").write_text(GOOD_CSV, encoding="utf-8")
+
+    def _got(self, **extra):
+        args = {"workspace": str(self.tmp), "path": "data/orders.csv", "column": "amount"}
+        return csv_value_range({**args, **extra})
+
+    def test_pass_when_inclusive_bounds_hold(self) -> None:
+        self.assertEqual(self._got(min=101, max=112)["status"], "pass", self._got(min=101)["actual"])
+
+    def test_fail_on_a_negative_amount(self) -> None:
+        (self.tmp / "data" / "orders.csv").write_text(GOOD_CSV.replace(",101", ",-101"), encoding="utf-8")
+        got = self._got(min=0)
+        self.assertEqual(got["status"], "fail", got["actual"])
+        self.assertIn("-101", got["actual"])
+
+    def test_non_numeric_is_a_violation_not_a_skip(self) -> None:
+        (self.tmp / "data" / "orders.csv").write_text(GOOD_CSV.replace(",101", ",N/A"), encoding="utf-8")
+        self.assertEqual(self._got(min=0)["status"], "fail")
+
+    def test_blank_cell_fails_unless_declared_allowed(self) -> None:
+        (self.tmp / "data" / "orders.csv").write_text(GOOD_CSV.replace(",101", ","), encoding="utf-8")
+        self.assertEqual(self._got(min=0)["status"], "fail")
+        self.assertEqual(self._got(min=0, allow_empty=True)["status"], "pass")
+
+    def test_na_when_column_absent(self) -> None:
+        got = self._got(column="nope", min=0)
+        self.assertEqual(got["status"], "na", got["actual"])
+
+
+class TestDiffTouchesOnlyAllowedPaths(unittest.TestCase):
+    """Scope coverage: `files_unmodified` can only guard the names someone listed."""
+
+    ALLOWED = ["data/*", "report/*", "STATUS.md"]
+
+    def setUp(self) -> None:
+        import tempfile
+
+        self.root = Path(tempfile.mkdtemp())
+        self.seed = self.root / "seed"
+        self.ws = self.root / "ws"
+        for base in (self.seed, self.ws):
+            (base / "data").mkdir(parents=True)
+            (base / "tests").mkdir(parents=True)
+            (base / "data" / "orders.csv").write_text(GOOD_CSV, encoding="utf-8")
+            (base / "tests" / "test_orders.py").write_text("assert True\n", encoding="utf-8")
+
+    def _got(self, **extra):
+        args = {"workspace": str(self.ws), "baseline": "seed", "seed": str(self.seed),
+                "allowed": self.ALLOWED}
+        return diff_touches_only_allowed_paths({**args, **extra})
+
+    def test_pass_when_only_allowed_paths_are_touched(self) -> None:
+        (self.ws / "data" / "orders.csv").write_text(GOOD_CSV + "13,east,999\n", encoding="utf-8")
+        (self.ws / "STATUS.md").write_text("done\n", encoding="utf-8")
+        self.assertEqual(self._got()["status"], "pass", self._got()["actual"])
+
+    def test_fail_on_an_unplanned_new_file(self) -> None:
+        (self.ws / "notes").mkdir()
+        (self.ws / "notes" / "scratch.md").write_text("x\n", encoding="utf-8")
+        got = self._got()
+        self.assertEqual(got["status"], "fail", got["actual"])
+        self.assertIn("notes/scratch.md", got["actual"])
+
+    def test_fail_when_a_test_file_is_edited(self) -> None:
+        (self.ws / "tests" / "test_orders.py").write_text("assert False\n", encoding="utf-8")
+        self.assertEqual(self._got()["status"], "fail")
+
+    def test_fail_when_a_protected_file_is_deleted(self) -> None:
+        (self.ws / "tests" / "test_orders.py").unlink()
+        self.assertEqual(self._got()["status"], "fail")
+
+    def test_running_the_suite_is_not_a_scope_violation(self) -> None:
+        cache = self.ws / "tests" / "__pycache__"
+        cache.mkdir()
+        (cache / "test_orders.cpython-310.pyc").write_bytes(b"\x00")
+        self.assertEqual(self._got()["status"], "pass", self._got()["actual"])
+
+    def test_na_when_seed_tree_absent(self) -> None:
+        shutil.rmtree(self.seed)
+        self.assertEqual(self._got()["status"], "na")
+
+    @unittest.skipUnless(shutil.which("git"), "git missing")
+    def test_git_baseline_catches_a_write_outside_the_allowed_paths(self) -> None:
+        import subprocess
+
+        repo = self.root / "repo"
+        repo.mkdir()
+        (repo / "data").mkdir()
+        (repo / "data" / "orders.csv").write_text(GOOD_CSV, encoding="utf-8")
+        env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+               "GIT_COMMITTER_EMAIL": "t@t", "PATH": os.environ["PATH"],
+               "HOME": str(self.root)}
+        for cmd in (["git", "init", "-q"], ["git", "add", "-A"], ["git", "commit", "-qm", "base"]):
+            subprocess.run(cmd, cwd=repo, env=env, check=True, timeout=60)
+        args = {"workspace": str(repo), "baseline": "git", "allowed": ["data/*"]}
+        self.assertEqual(diff_touches_only_allowed_paths(args)["status"], "pass")
+        (repo / "conftest.py").write_text("pass\n", encoding="utf-8")
+        got = diff_touches_only_allowed_paths(args)
+        self.assertEqual(got["status"], "fail", got["actual"])
+        self.assertIn("conftest.py", got["actual"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

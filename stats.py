@@ -57,3 +57,16 @@ def describe(rows: list[dict[str, Any]], arm: str, pred) -> tuple[int, int]:
     """(successes, n) for one arm — kept here so both arms go through one path."""
     sel = [r for r in rows if r.get("arm") == arm]
     return sum(1 for r in sel if pred(r)), len(sel)
+
+
+def zero_success_upper_bound(n: int, alpha: float = 0.05) -> float:
+    """One-sided 95% upper bound on a rate observed 0 times in `n` trials.
+
+    "No false positive observed" is not "the rate is 0". With n trials and 0
+    events the bound is `1 - alpha**(1/n)`; the rule of three (3/n) is its
+    large-n approximation. Anchors checkable by hand: n=1 -> 0.95 (one trial
+    proves almost nothing), n=2 -> 1 - sqrt(0.05) = 0.7764, decreasing in n.
+    """
+    if n <= 0:
+        raise ValueError("n must be a positive number of trials")
+    return 1.0 - alpha ** (1.0 / n)
