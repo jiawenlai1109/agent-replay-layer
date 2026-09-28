@@ -53,6 +53,7 @@ def load(vd: dict[str, str]) -> dict[tuple[str, str], list[dict[str, Any]]]:
             "rounds_run": int(rep.get("rounds_run") or 0),
             "abort": rep.get("abort_reason") or rep.get("report_status") or "",
             "verdict": vd.get(run_id, "not_recomputed"),
+            "rule": str(m.get("trigger_rule") or "v0_red_after_injection"),
         })
     return groups
 
@@ -73,6 +74,9 @@ def agg(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "abort": "|".join(sorted({r["abort"] for r in rows})),
         "satisfied": ok,
         "verdicts": "|".join(sorted({r["verdict"] for r in rows})),
+        # v0 (detection leaned on injected_at) and v1 (new red after green) are
+        # different instruments; a row that mixes them says so.
+        "rules": "|".join(sorted({r["rule"] for r in rows})),
         # cost per achieved success: failures are charged, that is the point
         "usd_per_success": round(sum(cost) / ok, 6) if ok else "",
         "tokens_per_success": int(sum(r["tokens"] for r in rows) / ok) if ok else "",
@@ -95,7 +99,7 @@ def main() -> int:
         # mistake which denominator a ratio uses.
         base_arm = "A" if "A" in arms else ("C-ROLL" if "C-ROLL" in arms else None)
         base = agg(arms[base_arm]) if base_arm else None
-        for arm in ("A", "B", "C-ROLL", "C-REC"):
+        for arm in ("A", "B", "C-ROLL", "C-REC", "D"):
             if arm not in arms:
                 continue
             a = agg(arms[arm])
@@ -112,7 +116,7 @@ def main() -> int:
         OUT.parent.mkdir(exist_ok=True)
         keys = ["task", "arm", "n", "cost_sum_usd", "cost_median_usd", "cost_range_usd",
                 "steps_median", "tokens_median", "rounds_given_or_run", "abort", "satisfied",
-                "verdicts", "usd_per_success", "tokens_per_success",
+                "verdicts", "usd_per_success", "tokens_per_success", "rules",
                 "baseline_arm", "cost_ratio_vs_baseline", "token_ratio_vs_baseline"]
         with OUT.open("w", encoding="utf-8", newline="") as fh:
             w = csv.DictWriter(fh, fieldnames=keys, extrasaction="ignore")

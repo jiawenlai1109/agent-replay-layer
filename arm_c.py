@@ -1,5 +1,8 @@
-"""Arms C-roll and C-rec: break the workspace mid-run, then recover from the
-step the sensor says it broke — with and without a directive.
+"""Arms C-roll, C-rec and D: break the workspace mid-run, then either recover from
+the step the sensor says it broke (with and without a directive) or, for D,
+interfere with nothing at all and let the run live with what it did. D is the
+control that decides whether recovery pays: same seed, same drift, same detector,
+same budget, no stop and no rewind.
 
 Why this file exists separately from runner.py: an in-flight batch re-invokes
 runner.py per task, so editing it mid-batch would spend money on a half-tested
@@ -169,7 +172,7 @@ def terminal_verdict(task_id: str, run_id: str, workspace: Path) -> dict[str, An
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--task", required=True)
-    ap.add_argument("--arm", required=True, choices=("C-ROLL", "C-REC"))
+    ap.add_argument("--arm", required=True, choices=("C-ROLL", "C-REC", "D"))
     ap.add_argument("--recipe", required=True, choices=sorted(inject.RECIPES))
     ap.add_argument("--rep", type=int, default=1)
     ap.add_argument("--inject-after", type=int, default=6, help="provider steps before the drift is injected")
@@ -214,6 +217,10 @@ def main() -> int:
         "run_id": run_id, "task_id": args.task, "arm": args.arm, "recipe": args.recipe,
         "entry": "api", "model": runner.MODEL, "agent": runner.AGENT, "workspace": str(workspace),
         "started_at": time.strftime("%F %T %Z"), "attempts": [], "readings": [],
+        # The budget is part of the result: a cheaper run that was given less room
+        # is not a saving. Recorded per run so cost_compare prints it next to it.
+        "budget": {"max_rounds": args.max_rounds, "minutes": args.minutes,
+                   "extra_rounds": args.extra_rounds, "inject_after": args.inject_after},
     }
     code = 1
     try:
@@ -249,10 +256,17 @@ def _run_body(args, rec: dict[str, Any], run_id: str, workspace: Path, bp: "Brea
     reading: list[dict[str, str]] = []
     gates: list[dict[str, Any]] = []
     live: set[str] = set()            # promises whose subject has entered play
+    flips: list[dict[str, Any]] = []  # every status transition over the whole run
+    drift_hashes: list[dict[str, Any]] = []   # the injected file, sampled per poll
+    drift_target: str | None = None
+    gates_answered = 0
+    prev: dict[str, str] = {}
     deadline = time.time() + args.minutes * 60
     snap = {}
     while time.time() < deadline:
         _, snap = runner.call("GET", f"/api/runs/{run_id}/status")
+        if args.arm == "D" and snap.get("alive") and resolve_gate(run_id):
+            gates_answered += 1
         prog = tap.live_progress(runner.RUNS_ROOT / run_id)
         steps = prog["steps"]
         # Read first, inject second. A reading taken before the drift exists is
@@ -262,17 +276,33 @@ def _run_body(args, rec: dict[str, Any], run_id: str, workspace: Path, bp: "Brea
         reading.append({"step": steps, "cost_usd": prog["cost_usd"],
                         "t": round(time.time(), 3), "unclosed": prog["unclosed_steps"],
                         **sensor_tick(commitments, workspace, seed, live)})
+        tick = reading[-1]
+        for cid, det in tick.items():
+            if cid in READING_SCALARS or not isinstance(det, dict):
+                continue
+            if prev.get(cid) != det["status"]:
+                flips.append({"step": steps, "t": tick["t"], "commitment_id": cid,
+                              "from": prev.get(cid), "to": det["status"]})
+                prev[cid] = det["status"]
+        if drift_target:
+            drift_hashes.append({"step": steps, "t": tick["t"], "sha": inject.sha(drift_target)})
         red = _first_new_red(reading, injected_at)
         if red is not None:
-            rec["sensor"] = red
             if injected_at is None:
                 # Rule v1 can catch the agent breaking a promise that was green
                 # before we ever plant a defect. That is a finding worth keeping,
                 # but it is not an injected sample: no rollback, no resume, and a
                 # return code of its own so it cannot enter the paired table.
+                rec["sensor"] = red
                 red["drift_source"] = "agent"
                 rec["aborted"] = "agent_drift_before_injection"
                 return EXIT_AGENT_DRIFT
+            # The first finding is what gets recorded for every arm. D stops
+            # *observing* here too, but nothing else: the remaining rounds are
+            # handed to drive_to_terminal, which resolves each completion gate with
+            # the same "stop" policy the resumed C attempt gets, so the two arms
+            # differ only by the rewind and the directive, never by the ceiling.
+            rec["sensor"] = red
             break
         if injected_at is None and steps >= args.inject_after and snap.get("alive"):
             # The family seeds ship carrying a defect -- the task text asks the
@@ -292,6 +322,21 @@ def _run_body(args, rec: dict[str, Any], run_id: str, workspace: Path, bp: "Brea
                     rec["injected_at_provider_step"] = injected_at
                     rec["injection"] = bp.manifest
                     rec["green_before_inject"] = True
+                    drift_target = Path(next(iter((bp.manifest.get("files") or {})), "")) or None
+                    # Was the drift there the instant after we wrote it? Without
+                    # this, "the sensor never fired" cannot be told apart from "the
+                    # agent's next write clobbered our bytes" - and D13 landed in
+                    # exactly that ambiguity: injected at step 6, ended green, and
+                    # nothing in the record says whether the drift was ever visible.
+                    visible = sensor_tick(commitments, workspace, seed, live)
+                    rec["injection_visible"] = {
+                        cid: visible[cid]["status"] for cid in
+                        ((bp.manifest.get("cascade") or []) + [bp.manifest.get("root_cause")])
+                        if cid in visible}
+                    entry: dict[str, Any] = {"step": steps, "t": round(time.time(), 3)}
+                    if drift_target:
+                        entry["sha"] = inject.sha(drift_target)
+                    drift_hashes.append(entry)
                 except (RuntimeError, AssertionError) as exc:
                     rec["injection_deferred"] = f"{type(exc).__name__}: {exc}"[:200]
         if not snap.get("alive"):
@@ -299,6 +344,14 @@ def _run_body(args, rec: dict[str, Any], run_id: str, workspace: Path, bp: "Brea
         time.sleep(POLL_SECONDS)
 
     rec["readings"] = reading[-12:]
+    rec["gates_answered"] = gates_answered
+    # The last 12 readings are a window; the flips are the whole history. A missed
+    # detection is only interpretable if the record says which transitions the
+    # sampler ever saw, and whether the injected bytes survived long enough to
+    # be sampled at all.
+    rec["status_flips"] = flips[-40:]
+    if drift_hashes:
+        rec["drift_file_hashes"] = drift_hashes[-40:]
     if gates:
         rec["injection_gate"] = gates[-8:]
     if "sensor" not in rec:
@@ -315,9 +368,31 @@ def _run_body(args, rec: dict[str, Any], run_id: str, workspace: Path, bp: "Brea
         else:
             rec["aborted"] = "drift_not_detected"
         rec["steps_at_abort"] = steps_now
+        # Measured on the first D run (C3-dup-key rep 13): this path returned with
+        # metrics never filled, so a run that spent 0.016242 USD over 18 provider
+        # steps reads as a zero-cost row in every table that filters on steps > 0.
+        # A sample that disappears from the denominators is the defect #27 class
+        # again, just moved from the exception path to the no-detection path.
+        rec["metrics"] = runner.collect(run_id)
+        rec["report"] = runner.read_report(run_id)
         rec["verdict_end_state"] = terminal_verdict(args.task, run_id, workspace)
         return EXIT_PROVIDER_DEAD if not steps_now else (
             EXIT_NOT_INJECTABLE if rec["aborted"] == "injection_gate_never_open" else EXIT_NO_DETECT)
+
+    if args.arm == "D":
+        # The control that decides whether replay is worth anything: same seed,
+        # same drift, same detector, same budget - but no stop, no rewind and no
+        # directive. Whatever the agent does with its own mistake from here is the
+        # baseline every C-arm saving has to beat.
+        rec["no_rewind"] = True
+        snap = runner.drive_to_terminal(run_id, max_minutes=args.minutes)
+        rec["attempts"].append({"kind": "post-drift-uninterrupted", "status": snap.get("status")})
+        rec["metrics"] = runner.collect(run_id)
+        rec["report"] = runner.read_report(run_id)
+        rec["verdict_end_state"] = terminal_verdict(args.task, run_id, workspace)
+        _write(rec, run_id)
+        return runner.exit_code_for({"metrics": rec["metrics"], "report": rec["report"],
+                                     "timed_out": False})
 
     red = rec["sensor"]
     green_before = _last_green_before(reading, red["index"], red["commitment_id"])
@@ -351,6 +426,21 @@ def _run_body(args, rec: dict[str, Any], run_id: str, workspace: Path, bp: "Brea
     rec["verdict_end_state"] = terminal_verdict(args.task, run_id, workspace)
     _write(rec, run_id)
     return runner.exit_code_for({"metrics": rec["metrics"], "report": rec["report"], "timed_out": False})
+
+
+def resolve_gate(run_id: str) -> str | None:
+    """Answer a completion gate so a D run is never left parked with nobody to
+    decide. Measured on the 2026-09-28 pilot: the D cell sat in
+    `waiting_approval` for seven minutes while the driver kept sampling a frozen
+    step counter, so the record showed no detection *and* no finished attempt.
+    Same action and shape as `runner.drive_to_terminal`, different reason string,
+    so the artifact says who answered."""
+    aid = runner.pending_approval(run_id)
+    if not aid:
+        return None
+    runner.call("POST", f"/api/runs/{run_id}/approvals/{aid}/resolve",
+                {"action": "stop", "reason": "arm D: gate reached, no rewind, ending the attempt"})
+    return aid
 
 
 def _ensure_stopped(run_id: str) -> None:

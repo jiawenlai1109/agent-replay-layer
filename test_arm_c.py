@@ -454,5 +454,170 @@ class TestTriggerEndToEnd(unittest.TestCase):
         self.assertEqual(rec["trigger_rule"], "new_red_after_green_v1")
 
 
+class TestDArm(unittest.TestCase):
+    """D is the control: same drift, same detector, and then *nothing* intervenes.
+
+    The assertions that matter are the absences. A stop call, a rollback or a
+    RECOVERY.md anywhere in a D run would silently turn the control into the
+    treatment and the whole cost comparison would be reading its own artifact.
+    """
+
+    CSV11 = "order_id,date,region,amount\n" + "".join(
+        f"O{i:03d},2026-01-01,east,{i}.5\n" for i in range(11))
+
+    def test_d_detects_but_never_stops_or_rewinds(self) -> None:
+        import argparse
+
+        tmp = tempfile.TemporaryDirectory()
+        root = Path(tmp.name)
+        ws, seed = root / "ws", root / "T" / "seed"
+        for base in (ws, seed):
+            (base / "data").mkdir(parents=True)
+            (base / "data" / "orders.csv").write_text(self.CSV11, encoding="utf-8")
+        (root / "runs").mkdir()
+        calls, state = [], {"steps": 0}
+
+        def fake_call(method, path, body=None):
+            calls.append((method, path))
+            if path == "/api/runs":
+                return 200, {"run_id": "T-D1-000000"}
+            state["steps"] += 1
+            if state["steps"] == 2:
+                (ws / "data" / "orders.csv").write_text(CSV12, encoding="utf-8")   # agent repairs
+            alive = state["steps"] < 4
+            return 200, {"alive": alive, "status": "running" if alive else "completed"}
+
+        class FakeBreakpoint:
+            manifest = {"recipe": "C1-csv-short", "root_cause": "c-orders-cardinality"}
+            restored = False
+            broken = self.CSV11
+            fixed = CSV12
+
+            def apply(self):
+                (ws / "data" / "orders.csv").write_text(self.broken, encoding="utf-8")   # the drift
+
+            def restore(self):
+                FakeBreakpoint.restored = True
+                return True
+
+        driven: list = []
+
+        def fake_drive(rid, max_minutes=1, settle_seconds=90):
+            driven.append(rid)
+            return {"status": "completed"}
+
+        # The pilot crashed here seven times: `files` is keyed by path *strings*,
+        # and inject.sha wants a Path. An empty manifest in the fake let the bug
+        # through, so this fixture must carry a real target file.
+        FakeBreakpoint.manifest = {"recipe": "C1-csv-short",
+                                   "root_cause": "c-orders-cardinality",
+                                   "cascade": ["c-orders-cardinality"],
+                                   "files": {str(ws / "data" / "orders.csv"):
+                                             str(root / "backup" / "orders.csv")}}
+        args = argparse.Namespace(task="T", arm="D", recipe="C1-csv-short", rep=1,
+                                  minutes=1, max_rounds=3, inject_after=1, extra_rounds=1)
+        rec: dict = {"readings": [], "attempts": []}
+        written: list = []
+        patches = [
+            mock.patch.object(arm_c.runner, "call", fake_call),
+            mock.patch.object(arm_c.runner, "RUNS_ROOT", root / "runs"),
+            mock.patch.object(arm_c, "load_commitments", lambda task: [CARD]),
+            mock.patch.object(arm_c.sbr_paths, "TASKS", root),
+            mock.patch.object(arm_c, "Breakpoint", FakeBreakpoint),
+            mock.patch.object(arm_c.tap, "live_progress",
+                              lambda d: {"steps": state["steps"], "cost_usd": 0.01,
+                                         "unclosed_steps": 0, "last_event_ts": None,
+                                         "last_event_type": None}),
+            mock.patch.object(arm_c, "POLL_SECONDS", 0),
+            mock.patch.object(arm_c.runner, "drive_to_terminal", fake_drive),
+            # The pilot's stall: a gate nobody answers freezes the step counter
+            # while the driver keeps sampling green. One pending gate per poll.
+            mock.patch.object(arm_c.runner, "pending_approval",
+                              lambda rid: "ap1" if state["steps"] == 2 else None),
+            mock.patch.object(arm_c.runner, "collect", lambda rid: {"steps": 40, "cost": 0.02}),
+            mock.patch.object(arm_c.runner, "read_report", lambda rid: {"report_status": "complete"}),
+            mock.patch.object(arm_c.runner, "exit_code_for", lambda m: 0),
+            mock.patch.object(arm_c, "terminal_verdict",
+                              lambda t, rid, w: {"ledger_verdict": "satisfied"}),
+            mock.patch.object(arm_c, "_write", lambda r, rid: written.append(rid)),
+        ]
+        for p in patches:
+            p.start()
+        try:
+            code = arm_c._run_body(args, rec, "T-D1-000000", ws, FakeBreakpoint())
+        finally:
+            for p in patches:
+                p.stop()
+            shutil.rmtree(root, ignore_errors=True)
+
+        self.assertEqual(code, 0)
+        self.assertGreaterEqual(rec["sensor"]["provider_step"], 3, "the detector must still fire")
+        self.assertGreaterEqual(rec["sensor"]["detected_lag_steps"], 1)
+        self.assertTrue(rec["no_rewind"])
+        self.assertEqual(FakeBreakpoint.restored, False, "D must never roll the workspace back")
+        self.assertNotIn("stopped_before_resume", rec)
+        self.assertFalse((ws / "RECOVERY.md").exists())
+        self.assertEqual([c for c in calls if c[1].endswith("/stop")], [], "D must never stop the run")
+        self.assertEqual(written, ["T-D1-000000"])
+        self.assertEqual(rec["attempts"][-1]["kind"], "post-drift-uninterrupted")
+        # The pilot died on this: the poll loop does not resolve completion gates,
+        # so a D run that is left alone sits in waiting_approval until the deadline.
+        # Handing the rest to drive_to_terminal is what keeps it moving.
+        self.assertEqual(driven, ["T-D1-000000"], "D must hand the remaining rounds to drive_to_terminal")
+        self.assertEqual(rec["gates_answered"], 1, "the pending gate must be answered while polling")
+        resolved = [c for c in calls if c[1].endswith("/resolve")]
+        self.assertEqual(len(resolved), 1)
+        # Both instruments the pilot lacked: was the drift visible the instant after
+        # we wrote it, and did the bytes survive until the next poll?
+        self.assertEqual(rec["injection_visible"], {"c-orders-cardinality": "fail"})
+        hashes = rec.get("drift_file_hashes") or []
+        self.assertTrue(hashes, "the injected file must be hashed per poll after injection")
+        self.assertTrue(all(len(h.get("sha", "")) == 64 for h in hashes if "sha" in h))
+        self.assertIn("sha", hashes[0], "the first sample is taken at injection time")
+
+    def test_resolve_gate_payload(self) -> None:
+        seen = []
+        with mock.patch.object(arm_c.runner, "pending_approval", lambda rid: "ap9"), \
+                mock.patch.object(arm_c.runner, "call",
+                                  lambda m, p, b=None: seen.append((m, p, b)) or (200, {})):
+            self.assertEqual(arm_c.resolve_gate("r1"), "ap9")
+        method, path, body = seen[0]
+        self.assertEqual(method, "POST")
+        self.assertEqual(path, "/api/runs/r1/approvals/ap9/resolve")
+        self.assertEqual(body["action"], "stop", "same gate policy as the batch runner")
+        self.assertIn("arm D", body["reason"], "the artifact must say who answered")
+        with mock.patch.object(arm_c.runner, "pending_approval", lambda rid: None):
+            self.assertIsNone(arm_c.resolve_gate("r1"))
+
+
+class TestCRollNeverAnswersGatesInLoop(unittest.TestCase):
+    """The gate-answering fix is D-only: a C arm reaches its gate by stopping the
+    run itself, so answering it from the loop would erase the thing being measured."""
+
+    def test_loop_guard_is_d_only(self) -> None:
+        import inspect
+
+        src = inspect.getsource(arm_c._run_body)
+        self.assertIn('if args.arm == "D" and snap.get("alive") and resolve_gate(run_id):', src)
+        self.assertEqual(src.count("resolve_gate(run_id)"), 1, "exactly one in-loop gate answer")
+
+
+class TestBudgetIsRecorded(unittest.TestCase):
+    """A cheaper arm that was given less room is not a saving, so the room has to
+    travel with the record."""
+
+    def test_flags_exist_for_every_field_the_comparer_reads(self) -> None:
+        import inspect
+
+        src = inspect.getsource(arm_c.main)
+        for flag in ("--arm", "--recipe", "--rep", "--inject-after", "--max-rounds",
+                     "--minutes", "--extra-rounds"):
+            self.assertIn(flag, src)
+        self.assertIn('"D"', src, "the D arm must be selectable from the CLI")
+        body = inspect.getsource(arm_c.main)
+        for key in ("max_rounds", "minutes", "extra_rounds", "inject_after"):
+            self.assertIn(f'"{key}"', body)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

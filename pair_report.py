@@ -116,9 +116,21 @@ def score(m: dict) -> dict:
 
 
 def main() -> int:
-    pat = sys.argv[1] if len(sys.argv) > 1 else "*C-R*"
+    argv = [a for a in sys.argv[1:] if not a.startswith("--")]
+    rule = None
+    for i, a in enumerate(sys.argv):
+        if a == "--rule" and i + 1 < len(sys.argv):
+            rule = sys.argv[i + 1]
+            argv = [x for x in argv if x != rule]
+    pat = argv[0] if argv else "*C-R*"
     recs = [score(m) for m in rows(pat)]
     recs = [r for r in recs if r["end_verdict"] != "run_missing"]
+    if rule:
+        recs = [r for r in recs if r["trigger_rule"].startswith(rule) or rule == "all"]
+        print(f"-- 只保留触发规则 {rule!r}：{len(recs)} 条")
+    if not recs:
+        print("no samples for that pattern/rule; nothing to report")
+        return 0
     rules = sorted({r["trigger_rule"] for r in recs})
     if len(rules) > 1:
         print("!! 同一张表里混了触发规则:",

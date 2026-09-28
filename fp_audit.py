@@ -69,6 +69,7 @@ def load_manifests() -> list[dict[str, Any]]:
             "truth": truth,
             "deferred": bool(d.get("injection_deferred")),
             "aborted": d.get("aborted"),
+            "crashed": str(d.get("crashed") or ""),
             "green_before_inject": d.get("green_before_inject"),
             "readings": d.get("readings") or [],
             "sensor": d.get("sensor"),
@@ -159,8 +160,12 @@ def main() -> int:
     # never started (`opencode: not found`, 18 ms, exit 127). Their alarms are
     # correct readings of a dead episode and counting them as sensor output
     # inflates both numerator and denominator -- the same folding as defect #16.
-    dead = [r for r in rows if r["aborted"]]
-    rows = [r for r in rows if not r["aborted"]]
+    # A crashed driver leaves the workspace holding the defect *it* injected, with
+    # nobody to restore it: seven such reds were counted on 2026-09-28. The
+    # readings are correct about a world the instrument broke, so those runs leave
+    # the denominator entirely, same rule as an aborted one.
+    dead = [r for r in rows if r["aborted"] or r["crashed"]]
+    rows = [r for r in rows if not r["aborted"] and not r["crashed"]]
     if args.limit:
         rows = rows[: args.limit]
 
