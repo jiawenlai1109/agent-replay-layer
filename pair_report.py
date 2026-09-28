@@ -93,6 +93,10 @@ def score(m: dict) -> dict:
         "run_id": rid,
         "task": m["task_id"],
         "arm": m.get("arm"),
+        # A run detected before DESIGN #19 needed `injected_at` to avoid cutting a
+        # run whose seed was already red; a v1 run does not. The two are different
+        # instruments and must never share one table.
+        "trigger_rule": str(m.get("trigger_rule") or "v0_red_after_injection"),
         "rep": rep_of(rid),
         "injected_at": inj,
         "detected_at": sen.get("provider_step"),
@@ -115,6 +119,11 @@ def main() -> int:
     pat = sys.argv[1] if len(sys.argv) > 1 else "*C-R*"
     recs = [score(m) for m in rows(pat)]
     recs = [r for r in recs if r["end_verdict"] != "run_missing"]
+    rules = sorted({r["trigger_rule"] for r in recs})
+    if len(rules) > 1:
+        print("!! 同一张表里混了触发规则:",
+              {k: sum(1 for r in recs if r["trigger_rule"] == k) for k in rules},
+              "—— v0(靠 injected_at) 与 v1(新增红灯) 不可合并引用，请用 [glob] 分开跑")
     OUT.parent.mkdir(parents=True, exist_ok=True)
     with OUT.open("w", encoding="utf-8", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=list(recs[0]) if recs else ["task"])

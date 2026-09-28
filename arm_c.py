@@ -36,15 +36,56 @@ from taskset import load_commitments
 
 CSTATE = sbr_paths.CSTATE
 EXIT_NO_DETECT, EXIT_PROVIDER_DEAD, EXIT_CRASHED, EXIT_NOT_INJECTABLE = 6, 7, 8, 9
+EXIT_AGENT_DRIFT = 10
 POLL_SECONDS = 5
 
 
-def sensor_tick(commitments: list[dict[str, Any]], workspace: Path) -> dict[str, dict[str, str]]:
+def in_play(seed: Path | None, workspace: Path, c: dict[str, Any]) -> bool:
+    """Has this promise's own subject material been touched since the seed?
+
+    The measured reason for the gate: 29 of 30 injected runs already carried a
+    red reading *before* any drift existed, because the family seeds ship broken
+    and the artifact is often not written yet. A red on a file the agent has not
+    touched since its starting state says nothing about what the agent did, so it
+    must not be able to stop a run.
+    """
+    paths = recover.promised_paths(c)
+    if not paths:
+        return True
+    if seed is None or not seed.is_dir():
+        return True
+    for rel in paths:
+        now, was = workspace / rel, seed / rel
+        if now.is_file() and not was.is_file():
+            return True                      # the agent created it
+        if now.is_file() and was.is_file() and now.read_bytes() != was.read_bytes():
+            return True
+    return False
+
+
+def sensor_tick(commitments: list[dict[str, Any]], workspace: Path, seed: Path | None = None,
+                live: set[str] | None = None) -> dict[str, dict[str, str]]:
     """One in-line reading. While the run is live the workspace *is* the current
     state, so no replay is needed — expected/actual are kept because the
-    directive renders them."""
+    directive renders them.
+
+    `live` is mutated: a promise that has once been in play stays in play. Without
+    that stickiness an agent that returns a file to its exact seed bytes would look
+    untouched and its red would be dropped, which is the wrong direction for a gate
+    that exists to be conservative about *stopping*.
+    """
     out: dict[str, dict[str, str]] = {}
     for c in commitments:
+        if live is not None and c["id"] in live:
+            touched = True
+        else:
+            touched = in_play(seed, workspace, c)
+            if touched and live is not None:
+                live.add(c["id"])
+        if not touched:
+            out[c["id"]] = {"status": "na", "expected": "promise paths touched since seed",
+                            "actual": "not_in_play:" + ",".join(sorted(recover.promised_paths(c)))[:100]}
+            continue
         try:
             v = predicates.REGISTRY[c["predicate"]]({**c.get("args", {}), "workspace": str(workspace)})
             out[c["id"]] = {"status": v["status"], "expected": str(v.get("expected", ""))[:120],
@@ -200,10 +241,14 @@ def _run_body(args, rec: dict[str, Any], run_id: str, workspace: Path, bp: "Brea
     nothing, but they also produced nothing, and left no manifest behind).
     """
     commitments = [c for c in load_commitments(args.task) if c["applies_to"] == "workspace" and c["predicate"] not in recover.HEAVY]
+    seed = sbr_paths.TASKS / args.task / "seed"
+    rec["trigger_rule"] = "new_red_after_green_v1"
+    rec["sensor_commitments"] = [c["id"] for c in commitments]
 
     injected_at = None
     reading: list[dict[str, str]] = []
     gates: list[dict[str, Any]] = []
+    live: set[str] = set()            # promises whose subject has entered play
     deadline = time.time() + args.minutes * 60
     snap = {}
     while time.time() < deadline:
@@ -216,10 +261,18 @@ def _run_body(args, rec: dict[str, Any], run_id: str, workspace: Path, bp: "Brea
         # detected_lag_steps measure my own loop instead of the sensor.
         reading.append({"step": steps, "cost_usd": prog["cost_usd"],
                         "t": round(time.time(), 3), "unclosed": prog["unclosed_steps"],
-                        **sensor_tick(commitments, workspace)})
-        red = _first_red_after(reading, injected_at)
+                        **sensor_tick(commitments, workspace, seed, live)})
+        red = _first_new_red(reading, injected_at)
         if red is not None:
             rec["sensor"] = red
+            if injected_at is None:
+                # Rule v1 can catch the agent breaking a promise that was green
+                # before we ever plant a defect. That is a finding worth keeping,
+                # but it is not an injected sample: no rollback, no resume, and a
+                # return code of its own so it cannot enter the paired table.
+                red["drift_source"] = "agent"
+                rec["aborted"] = "agent_drift_before_injection"
+                return EXIT_AGENT_DRIFT
             break
         if injected_at is None and steps >= args.inject_after and snap.get("alive"):
             # The family seeds ship carrying a defect -- the task text asks the
@@ -367,15 +420,31 @@ def _provider_steps(run_dir: Path) -> int:
 READING_SCALARS = ("step", "cost_usd", "t", "unclosed")
 
 
-def _first_red_after(reading: list[dict[str, Any]], injected_at: int) -> dict[str, Any] | None:
-    """The first red that appears *after* the injection, with the last green
-    reading of the same promise kept alongside it."""
+def _first_new_red(reading: list[dict[str, Any]], injected_at: int | None) -> dict[str, Any] | None:
+    """Rule v1: fire on a promise that turns red *after having been seen green*.
+
+    The old rule fired on the first red after `injected_at`, which is information
+    only an experimenter has: a production harness does not know where the drift
+    was planted. G3 measured the consequence - 29 of 30 injected runs already had
+    a red reading before any drift existed, so a "any red means stop" trigger
+    would have cut 96.7% of runs for nothing (DESIGN revision #19).
+
+    A red is now a finding only when this same run previously read that promise
+    as pass. Together with the in-play gate that is enough on its own: the
+    injection gate already requires the root-cause promise to read pass before it
+    plants the defect, so the flip is always observable. `injected_at` stays in
+    the record for attribution and lag, but nothing depends on it any more.
+    """
+    ok_seen: dict[str, int] = {}
     for i, snap in enumerate(reading):
-        if injected_at is None or snap["step"] <= injected_at:
-            continue  # everything at or before the drift is baseline, not a finding
         for cid, det in snap.items():
-            if cid in READING_SCALARS or not isinstance(det, dict) or det["status"] != "fail":
+            if cid in READING_SCALARS or not isinstance(det, dict):
                 continue
+            if det["status"] == "pass":
+                ok_seen.setdefault(cid, snap["step"])
+                continue
+            if det["status"] != "fail" or cid not in ok_seen:
+                continue                     # baseline red, or never green: not a finding
             return {
                 "index": i,
                 "provider_step": snap["step"],
@@ -385,7 +454,8 @@ def _first_red_after(reading: list[dict[str, Any]], injected_at: int) -> dict[st
                 "commitment_id": cid,
                 "expected": det["expected"],
                 "actual": det["actual"],
-                "detected_lag_steps": snap["step"] - injected_at,
+                "green_at_provider_step": ok_seen[cid],
+                "detected_lag_steps": None if injected_at is None else snap["step"] - injected_at,
             }
     return None
 

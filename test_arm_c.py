@@ -82,37 +82,40 @@ class TestBreakpointBookkeeping(Base):
         self.reading = [green, red]
 
     def test_first_red_carries_the_lag_and_the_promise(self) -> None:
-        red = arm_c._first_red_after(self.reading, injected_at=5)
+        red = arm_c._first_new_red(self.reading, injected_at=5)
         self.assertEqual(red["commitment_id"], "c-orders-cardinality")
         self.assertEqual(red["provider_step"], 7)
         self.assertEqual(red["detected_lag_steps"], 2)
         self.assertEqual(red["actual"], "11 data rows")
 
     def test_last_green_is_the_rollback_target(self) -> None:
-        red = arm_c._first_red_after(self.reading, injected_at=5)
+        red = arm_c._first_new_red(self.reading, injected_at=5)
         self.assertEqual(arm_c._last_green_before(self.reading, red["index"], red["commitment_id"]), 5)
 
-    def test_a_red_before_the_injection_is_not_the_finding(self) -> None:
-        """Baseline readings are rollback evidence, not detection evidence."""
-        broken = {"step": 3, "c-x": {"status": "fail", "expected": "e", "actual": "already red"}}
+    def test_a_red_that_was_never_green_is_not_the_finding(self) -> None:
+        """Rule v1 (DESIGN #19): 96.7% of injected runs already read red before any
+        drift existed. A red only counts once this same run has seen that promise
+        pass, and that no longer requires knowing where the defect was planted.
+        """
         only_baseline_red = [{"step": 3, "c-a": {"status": "fail", "expected": "e", "actual": "x"}},
                              {"step": 5, "c-a": {"status": "pass", "expected": "e", "actual": "ok"}}]
-        self.assertIsNone(arm_c._first_red_after(only_baseline_red, injected_at=5))
-        # a red at step 3 predates an injection at step 5, so the one at 7 wins
-        self.assertEqual(arm_c._first_red_after([broken] + self.reading, injected_at=5)["provider_step"], 7)
-        # but if the drift happened at step 2, the step-3 red is a legitimate finding
-        self.assertEqual(arm_c._first_red_after([broken] + self.reading, injected_at=2)["provider_step"], 3)
+        self.assertIsNone(arm_c._first_new_red(only_baseline_red, injected_at=None))
+        broken = {"step": 3, "c-x": {"status": "fail", "expected": "e", "actual": "already red"}}
+        # the step-3 red has no green in front of it, so the finding is step 7 even
+        # when the injection predates it -- this is the assertion that changed
+        self.assertEqual(arm_c._first_new_red([broken] + self.reading, injected_at=2)["provider_step"], 7)
+        self.assertEqual(arm_c._first_new_red([broken] + self.reading, injected_at=5)["provider_step"], 7)
 
     def test_no_red_returns_none_rather_than_a_guess(self) -> None:
         all_green = [{"step": 1, "c-a": {"status": "pass", "expected": "", "actual": ""}}]
-        self.assertIsNone(arm_c._first_red_after(all_green, injected_at=1))
+        self.assertIsNone(arm_c._first_new_red(all_green, injected_at=1))
         self.assertIsNone(arm_c._last_green_before(all_green, 0, "c-a"))
 
     def test_the_progress_scalars_are_not_mistaken_for_promises(self) -> None:
         """The reading row now carries cost/time/unclosed next to the per-promise
         dicts. A loop that keys on "anything that is not `step`" would turn the
         sampler's own fields into findings."""
-        red = arm_c._first_red_after(self.reading, injected_at=5)
+        red = arm_c._first_new_red(self.reading, injected_at=5)
         self.assertEqual(red["commitment_id"], CARD["id"])
         self.assertEqual(red["cost_usd_at_detect"], 0.0055)
         self.assertEqual(red["t_at_detect"], 1010.5)
@@ -293,6 +296,162 @@ class TestDriverWiring(unittest.TestCase):
         finally:
             for p in self.patches:
                 p.stop()
+
+
+class TestNewRedTrigger(unittest.TestCase):
+    """DESIGN #19: the trigger may no longer lean on `injected_at`.
+
+    G3 measured that 29 of 30 injected runs already carried a red reading before
+    any drift was planted, because the family seeds ship broken. The old rule
+    dodged them only by knowing where the defect had been put, which a production
+    harness does not know. Every case below passes `injected_at=None`.
+    """
+
+    @staticmethod
+    def _row(step: int, **states: str) -> dict:
+        row = {"step": step, "cost_usd": 0.0, "t": float(step), "unclosed": 0}
+        for cid, st in states.items():
+            row[cid] = {"status": st, "expected": "e", "actual": "a"}
+        return row
+
+    def test_baseline_red_never_fires(self) -> None:
+        reading = [self._row(1, c_a="fail"), self._row(2, c_a="fail"), self._row(3, c_a="fail")]
+        self.assertIsNone(arm_c._first_new_red(reading, None))
+
+    def test_na_is_not_green(self) -> None:
+        reading = [self._row(1, c_a="na"), self._row(2, c_a="fail")]
+        self.assertIsNone(arm_c._first_new_red(reading, None))
+
+    def test_green_then_red_fires_with_no_injection_knowledge(self) -> None:
+        reading = [self._row(3, c_a="pass"), self._row(5, c_a="fail")]
+        got = arm_c._first_new_red(reading, None)
+        self.assertEqual(got["commitment_id"], "c_a")
+        self.assertEqual(got["green_at_provider_step"], 3)
+        self.assertIsNone(got["detected_lag_steps"])
+
+    def test_lag_is_still_measured_when_the_experiment_injects(self) -> None:
+        reading = [self._row(3, c_a="pass"), self._row(7, c_a="fail")]
+        got = arm_c._first_new_red(reading, 6)
+        self.assertEqual(got["detected_lag_steps"], 1)
+
+    def test_one_green_then_many_reds_fires_once_at_the_first(self) -> None:
+        reading = [self._row(2, c_a="pass"), self._row(4, c_a="fail"), self._row(6, c_a="fail")]
+        got = arm_c._first_new_red(reading, None)
+        self.assertEqual(got["provider_step"], 4)
+
+
+class TestInPlayGate(Base):
+    """A promise is judged only once its own subject has entered the arena."""
+
+    CSV11 = "order_id,date,region,amount\n" + "".join(
+        f"O{i:03d},2026-01-01,east,{i}.5\n" for i in range(11))
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.seed = self.tmp / "seed"
+        shutil.copytree(self.ws, self.seed)
+
+    def test_untouched_promise_reads_na_not_a_red(self) -> None:
+        (self.ws / "data" / "orders.csv").write_text(self.CSV11, encoding="utf-8")
+        (self.seed / "data" / "orders.csv").write_text(self.CSV11, encoding="utf-8")
+        got = arm_c.sensor_tick([CARD], self.ws, self.seed)
+        self.assertEqual(got["c-orders-cardinality"]["status"], "na")
+        self.assertTrue(got["c-orders-cardinality"]["actual"].startswith("not_in_play"))
+
+    def test_modified_bytes_put_the_promise_in_play(self) -> None:
+        got = arm_c.sensor_tick([CARD], self.ws, self.seed)   # ws identical to seed here
+        self.assertEqual(got["c-orders-cardinality"]["status"], "na")
+        (self.ws / "data" / "orders.csv").write_text(self.CSV11, encoding="utf-8")
+        live: set[str] = set()
+        got = arm_c.sensor_tick([CARD], self.ws, self.seed, live)
+        self.assertEqual(got["c-orders-cardinality"]["status"], "fail")
+        self.assertIn("c-orders-cardinality", live)
+
+    def test_a_new_file_counts_as_in_play(self) -> None:
+        card = {"id": "c-extra", "predicate": "artifact_exists", "applies_to": "workspace",
+                "args": {"path": "data/extra.csv"}}
+        self.assertEqual(arm_c.sensor_tick([card], self.ws, self.seed)[
+            "c-extra"]["status"], "na")
+        (self.ws / "data" / "extra.csv").write_text("a,b\n1,2\n", encoding="utf-8")
+        self.assertEqual(arm_c.sensor_tick([card], self.ws, self.seed)[
+            "c-extra"]["status"], "pass")
+
+    def test_in_play_is_sticky_when_the_agent_restores_the_seed_bytes(self) -> None:
+        """Returning a file to its exact seed content must not erase its history."""
+        (self.ws / "data" / "orders.csv").write_text(self.CSV11, encoding="utf-8")
+        live: set[str] = set()
+        arm_c.sensor_tick([CARD], self.ws, self.seed, live)
+        shutil.copyfile(self.seed / "data" / "orders.csv", self.ws / "data" / "orders.csv")
+        got = arm_c.sensor_tick([CARD], self.ws, self.seed, live)
+        self.assertNotEqual(got["c-orders-cardinality"]["status"], "na")
+
+    def test_a_promise_without_paths_is_always_judged(self) -> None:
+        self.assertTrue(arm_c.in_play(self.seed, self.ws, {"args": {}}))
+        self.assertTrue(arm_c.in_play(None, self.ws, CARD))
+
+
+class TestTriggerEndToEnd(unittest.TestCase):
+    """The rule change only counts if the real loop takes the new path: an agent
+    that breaks a promise it had itself repaired, with no injection at all, must
+    exit on its own code and never reach the rollback."""
+
+    CSV11 = "order_id,date,region,amount\n" + "".join(
+        f"O{i:03d},2026-01-01,east,{i}.5\n" for i in range(11))
+
+    def test_agent_drift_before_any_injection_returns_its_own_code(self) -> None:
+        import argparse
+
+        tmp = tempfile.TemporaryDirectory()
+        root = Path(tmp.name)
+        ws, seed = root / "ws", root / "T" / "seed"
+        for base in (ws, seed):
+            (base / "data").mkdir(parents=True)
+            (base / "data" / "orders.csv").write_text(self.CSV11, encoding="utf-8")
+        (root / "runs").mkdir()
+        state = {"steps": 0}
+
+        def fake_call(method, path, body=None):
+            state["steps"] += 1
+            if state["steps"] == 2:
+                (ws / "data" / "orders.csv").write_text(CSV12, encoding="utf-8")   # agent repairs
+            if state["steps"] == 4:
+                (ws / "data" / "orders.csv").write_text(self.CSV11, encoding="utf-8")   # agent regresses
+            return 200, {"alive": True, "status": "running"}
+
+        class NeverInject:
+            manifest: dict = {}
+
+            def apply(self) -> None:
+                raise AssertionError("the injection must not be reached in this test")
+
+        args = argparse.Namespace(task="T", arm="C-ROLL", recipe="C1-csv-short", rep=1,
+                                  minutes=1, max_rounds=2, inject_after=99, extra_rounds=1)
+        rec: dict = {"readings": []}
+        patches = [
+            mock.patch.object(arm_c.runner, "call", fake_call),
+            mock.patch.object(arm_c.runner, "RUNS_ROOT", root / "runs"),
+            mock.patch.object(arm_c, "load_commitments", lambda task: [CARD]),
+            mock.patch.object(arm_c.sbr_paths, "TASKS", root),
+            mock.patch.object(arm_c.tap, "live_progress",
+                              lambda d: {"steps": state["steps"], "cost_usd": 0.0,
+                                         "unclosed_steps": 0, "last_event_ts": None,
+                                         "last_event_type": None}),
+            mock.patch.object(arm_c, "POLL_SECONDS", 0),
+        ]
+        for p in patches:
+            p.start()
+        try:
+            code = arm_c._run_body(args, rec, "T-C-ROLL1-000000", ws, NeverInject())
+        finally:
+            for p in patches:
+                p.stop()
+            shutil.rmtree(root, ignore_errors=True)
+        self.assertEqual(code, arm_c.EXIT_AGENT_DRIFT)
+        self.assertEqual(rec["aborted"], "agent_drift_before_injection")
+        self.assertEqual(rec["sensor"]["drift_source"], "agent")
+        self.assertIsNone(rec["sensor"]["detected_lag_steps"])
+        self.assertNotIn("injected_at_provider_step", rec)
+        self.assertEqual(rec["trigger_rule"], "new_red_after_green_v1")
 
 
 if __name__ == "__main__":
