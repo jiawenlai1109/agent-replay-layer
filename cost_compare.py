@@ -54,6 +54,7 @@ def load(vd: dict[str, str]) -> dict[tuple[str, str], list[dict[str, Any]]]:
             "abort": rep.get("abort_reason") or rep.get("report_status") or "",
             "verdict": vd.get(run_id, "not_recomputed"),
             "rule": str(m.get("trigger_rule") or "v0_red_after_injection"),
+            "model": str(m.get("model") or "?"),
         })
     return groups
 
@@ -77,6 +78,8 @@ def agg(rows: list[dict[str, Any]]) -> dict[str, Any]:
         # v0 (detection leaned on injected_at) and v1 (new red after green) are
         # different instruments; a row that mixes them says so.
         "rules": "|".join(sorted({r["rule"] for r in rows})),
+        # Prices differ per model, so a row mixing models mixes cost scales.
+        "models": "|".join(sorted({r["model"] for r in rows})),
         # cost per achieved success: failures are charged, that is the point
         "usd_per_success": round(sum(cost) / ok, 6) if ok else "",
         "tokens_per_success": int(sum(r["tokens"] for r in rows) / ok) if ok else "",
@@ -116,7 +119,7 @@ def main() -> int:
         OUT.parent.mkdir(exist_ok=True)
         keys = ["task", "arm", "n", "cost_sum_usd", "cost_median_usd", "cost_range_usd",
                 "steps_median", "tokens_median", "rounds_given_or_run", "abort", "satisfied",
-                "verdicts", "usd_per_success", "tokens_per_success", "rules",
+                "verdicts", "usd_per_success", "tokens_per_success", "rules", "models",
                 "baseline_arm", "cost_ratio_vs_baseline", "token_ratio_vs_baseline"]
         with OUT.open("w", encoding="utf-8", newline="") as fh:
             w = csv.DictWriter(fh, fieldnames=keys, extrasaction="ignore")

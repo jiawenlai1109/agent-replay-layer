@@ -16,6 +16,20 @@ from pathlib import Path
 from typing import Any
 
 ROLES = ("manager", "executor", "auditor", "final_response")
+# lh-harness names the per-episode provider stream after the agent CLI it drove
+# (manager.py:1955-1962): provider_stream.jsonl for opencode, codex_stream.jsonl
+# for codex, claude_stream.jsonl for claude_code. Hardcoding the opencode name
+# makes every offline reader blind on a run from another CLI.
+EPISODE_STREAM_GLOBS = tuple(f"lh_harness/*_episodes/*/{name}.jsonl"
+                             for name in ("provider_stream", "codex_stream", "claude_stream"))
+
+
+def episode_streams(run_dir: Path) -> list[Path]:
+    """Every per-episode provider stream in a run directory, whatever CLI wrote it."""
+    found: list[Path] = []
+    for pattern in EPISODE_STREAM_GLOBS:
+        found.extend(Path(run_dir).glob(pattern))
+    return sorted(found, key=lambda p: (p.parent.name, p.name))
 
 
 def input_excerpt(step: dict[str, Any], limit: int = 200) -> str:
@@ -279,23 +293,24 @@ def cost_timeline(run_dir: Path, *, with_episodes: bool = False) -> list[dict[st
     round file for the same round number wholesale (0 of the 100 role files on
     disk mix attempts), so when the resumed attempt reuses an episode slot the
     earlier attempt survives only here — measured on 11 of 22 C samples.
-    Duplicate events are dropped on (role, timestamp).
+    A duplicate is the *same event read from two files*: two steps of the same role
+    landing in the same millisecond inside one file are two steps, and dropping one
+    of those silently shortens the clock.
     """
     events: list[dict[str, Any]] = []
-    seen: set[tuple[str, float]] = set()
+    seen: dict[tuple[str, float], Path] = {}
 
     def add(path: Path, role: str, where: str) -> None:
         rnd = path.parent.parent.name if where == "episodes" else path.parent.name
         for seq, rec in enumerate(step_tokens(path), start=1):
             ts = rec.get("ts")
             if ts is not None and where == "episodes":
-                # Only the mirror is deduplicated. Two distinct steps can finish in
-                # the same millisecond in the same role file, and dropping one of
-                # those would silently shorten the authoritative stream.
-                if (role, float(ts)) in seen:
+                # Only the mirror is deduplicated, and only against a different file.
+                previous = seen.get((role, float(ts)))
+                if previous is not None and previous != path:
                     continue
             if ts is not None:
-                seen.add((role, float(ts)))
+                seen[(role, float(ts))] = path
             events.append({
                 "round": rnd,
                 "role": role,
@@ -310,7 +325,7 @@ def cost_timeline(run_dir: Path, *, with_episodes: bool = False) -> list[dict[st
             "lh_harness/role_orchestration/rounds/round_*/*_raw_trajectory.jsonl")):
         add(f, _role_of_round_path(f), "rounds")
     if with_episodes:
-        for f in sorted(Path(run_dir).glob("lh_harness/*_episodes/*/provider_stream.jsonl")):
+        for f in episode_streams(run_dir):
             add(f, _role_of_episode_path(f), "episodes")
     # An event with no timestamp cannot be placed against the cut, so it sorts
     # last and the caller is told how many there are rather than getting a

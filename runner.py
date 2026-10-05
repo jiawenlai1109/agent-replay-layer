@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 import urllib.error
@@ -30,7 +31,10 @@ WS_ROOT = sbr_paths.WS_ROOT
 MANIFESTS = sbr_paths.MANIFESTS
 RESULTS = sbr_paths.RESULTS
 API = sbr_paths.API
-MODEL = "deepseek/deepseek-flash"
+# Every run records this string in its manifest. A second provider is a different
+# sample generation (prices per million tokens differ), so cost numbers are only
+# ever compared within one model; SBR_MODEL switches it without editing code.
+MODEL = os.environ.get("SBR_MODEL") or "deepseek/deepseek-flash"
 AGENT = "opencode"
 
 

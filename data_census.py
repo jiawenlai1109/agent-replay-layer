@@ -29,6 +29,7 @@ from pathlib import Path
 
 import sbr_paths
 import stats
+import tap
 
 MAN = sbr_paths.MANIFESTS
 RES = sbr_paths.RESULTS
@@ -74,7 +75,7 @@ def wall_seconds(run_id: str) -> float | None:
         return None
     stamps = []
     for f in list(d.glob("lh_harness/role_orchestration/rounds/round_*/*_raw_trajectory.jsonl")) + \
-             list(d.glob("lh_harness/*_episodes/*/provider_stream.jsonl")):
+             tap.episode_streams(d):
         for line in f.read_text(encoding="utf-8", errors="replace").splitlines():
             try:
                 ev = json.loads(line)
@@ -122,20 +123,101 @@ def main() -> int:
         num(f"tokens_sum[{arm}]", sum(t))
         num(f"tokens_median[{arm}]", int(statistics.median(t)))
 
+    # A second provider or model is a different sample generation: price per million
+    # tokens differs, so no cost number may be pooled across models. Print the mix.
+    by_model = dict(Counter(str(m.get("model") or "?") for m in valid))
+    num("models_of_valid_runs", by_model)
+    num("models_pure", len(by_model) == 1)
+    by_arm_model: dict[str, list[dict]] = defaultdict(list)
+    for m in valid:
+        by_arm_model[f"{m.get('arm') or '?'}@{m.get('model') or '?'}"].append(m)
+    for key, rows in sorted(by_arm_model.items()):
+        num(f"n[{key}]", len(rows))
+        num(f"cost_usd_sum[{key}]", round(sum(cost_of(x) for x in rows), 6))
+
     num("cost_usd_total_valid", round(sum(cost_of(m) for m in valid), 6))
     num("cost_cny_total_valid_at_7.1", round(sum(cost_of(m) for m in valid) * 7.1, 4))
     num("provider_steps_total_valid", sum(steps_of(m) for m in valid))
     num("distinct_tasks_with_valid_samples", len({m["task_id"] for m in valid}))
     num("distinct_recipes_injected", len({m.get("recipe") for m in valid if m.get("recipe")}))
 
-    walls = [(m["run_id"], wall_seconds(m["run_id"])) for m in valid]
-    ok = [(rid, w) for rid, w in walls if w]
-    num(f"wall_proxy_runs_measured", len(ok))
+    # Corpus-level ledger verdicts, from two sources that are NOT interchangeable. Two
+    # manifest shapes carry the terminal verdict (the C/D driver writes verdict_end_state,
+    # the A/B driver writes outcome), and that stored value is the judgement made by the
+    # predicates *of that day* - the predicates have since changed, so it is evidence about
+    # the instrument too. `rescore_verdicts.py` re-runs the current ledger over the durable
+    # artifacts; where it covers a run, that is the number to quote. A run the re-score has
+    # not covered (workspace gone) must never be counted as recomputed.
+    def ledger_satisfied(m: dict) -> bool:
+        verdict = (m.get("verdict_end_state") or {}).get("ledger_verdict")
+        if verdict is not None:
+            return verdict == "satisfied"
+        return bool((m.get("outcome") or {}).get("satisfied_by_ledger"))
+
+    arms = sorted({str(m.get("arm") or "?") for m in valid})
+    sat: dict[str, int] = defaultdict(int)
+    claim_miss: dict[str, int] = defaultdict(int)
+    for m in valid:
+        arm = str(m.get("arm") or "?")
+        if ledger_satisfied(m):
+            sat[arm] += 1
+        elif (m.get("report") or {}).get("completion_satisfied") is True:
+            claim_miss[arm] += 1
+    for arm in arms:
+        num(f"ledger_satisfied[{arm}]", f"{sat[arm]}/{sum(1 for m in valid if str(m.get('arm') or '?') == arm)}")
+        if claim_miss[arm]:
+            num(f"harness_claim_satisfied_recorded_not[{arm}]", claim_miss[arm])
+    num("ledger_satisfied_total_valid", f"{sum(sat.values())}/{len(valid)}")
+    num("harness_claim_satisfied_recorded_not_total", sum(claim_miss.values()))
+
+    re_file = RES / "verdict_rescore.csv"
+    num("verdict_rescore_present", re_file.is_file())
+    if re_file.is_file():
+        stamp = datetime.fromtimestamp(re_file.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+        rows = list(csv.DictReader(re_file.open(encoding="utf-8")))
+        new = {r["run_id"]: r["new"] for r in rows}
+        num("verdict_rescore_rows", len(rows))
+        num("verdict_rescore_mtime", stamp)
+        covered = [m for m in valid if m["run_id"] in new]
+        num("verdict_rescore_covers_valid", f"{len(covered)}/{len(valid)}")
+        res_miss: dict[str, int] = defaultdict(int)
+        res_sat: dict[str, int] = defaultdict(int)
+        flipped: list[str] = []
+        for m in covered:
+            arm, verdict = str(m.get("arm") or "?"), new[m["run_id"]]
+            if verdict == "unknown":
+                continue
+            if verdict == "satisfied":
+                res_sat[arm] += 1
+            if verdict != "satisfied" and (m.get("report") or {}).get("completion_satisfied") is True:
+                res_miss[arm] += 1
+            stored = ledger_satisfied(m)
+            if stored != (verdict == "satisfied"):
+                flipped.append(f"{m['run_id']}:{'satisfied' if stored else 'not'}->{verdict}")
+        for arm in sorted(res_sat):
+            num(f"ledger_satisfied_rescored[{arm}]",
+                f"{res_sat[arm]}/{sum(1 for m in covered if str(m.get('arm') or '?') == arm)}")
+        num("ledger_satisfied_rescored_total", f"{sum(res_sat.values())}/{len(covered)}")
+        for arm in sorted(res_miss):
+            num(f"harness_claim_satisfied_rescored_not[{arm}]", res_miss[arm])
+        num("harness_claim_satisfied_rescored_not_total", sum(res_miss.values()))
+        num("stored_verdict_superseded_by_rescore", f"{len(flipped)}: {flipped[:8]}")
+
+    walls = [(m["run_id"], str(m.get("arm") or "?"), str(m.get("model") or "?"), wall_seconds(m["run_id"])) for m in valid]
+    ok = [(rid, arm, model, w) for rid, arm, model, w in walls if w]
+    num("wall_proxy_runs_measured", len(ok))
     if ok:
-        ws = sorted(w for _, w in ok)
+        ws = sorted(w for _, _, _, w in ok)
         num("wall_proxy_median_s", round(statistics.median(ws), 1))
         num("wall_proxy_minmax_s", f"{ws[0]:.1f}..{ws[-1]:.1f}")
         num("wall_proxy_sum_min", round(sum(ws) / 60, 1))
+        # Per arm *and* model: how long a step takes is a property of the provider, so
+        # a pooled arm median would mix two clocks.
+        for arm in sorted({a for _, a, _, _ in ok}):
+            for model in sorted({mo for _, a, mo, _ in ok if a == arm}):
+                sub = sorted(w for _, a, mo, w in ok if a == arm and mo == model)
+                num(f"wall_proxy[{arm}@{model}]", f"n={len(sub)} median {statistics.median(sub):.1f}s "
+                                                  f"sum {round(sum(sub) / 60, 1)}min")
 
     # --- paired C-arm report ---
     # The filter below is the one pair_report.py prints its headline with: n counts
@@ -146,6 +228,12 @@ def main() -> int:
     if pr.is_file():
         rows = list(csv.DictReader(pr.open(encoding="utf-8")))
         num("pair_report_rows", len(rows))
+        # This CSV is whatever the last pair_report.py invocation left behind, and
+        # that one takes a --rule filter. Counting the rules in it is the only way
+        # this census can tell a pooled table from a single-universe one.
+        rules = dict(Counter(r.get("trigger_rule") or "v0_red_after_injection" for r in rows))
+        num("pair_report_rules", rules)
+        num("pair_report_rules_pure", len(rules) == 1)
         num("pair_report_arms", dict(Counter(r["arm"] for r in rows)))
         resumed = [r for r in rows if r["resume_epoch"]]
         num("pair_report_resumed_n", len(resumed))

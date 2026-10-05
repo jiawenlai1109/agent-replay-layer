@@ -24,11 +24,26 @@ if [ ${#FAMS[@]} -eq 0 ]; then
   FAMS=("T-PIPE-01F-C3-dup-key:C3-dup-key" "T-PIPE-01F-C4-region-typo:C4-region-typo")
 fi
 
-MAX_ROUNDS=3; MINUTES=12; INJECT_AFTER=6; EXTRA_ROUNDS=1
+# EXTRA_ROUNDS is overridable because the first batch was not budget-aligned: D
+# used 2-3 of its 3-round ceiling while C-REC only ever got 1 + 1. Run the
+# aligned cells as `EXTRA_ROUNDS=2 bash batch_d.sh 15 <family>` so C-REC's total
+# (1 before the halt + 2 after the rewind) equals D's ceiling.
+MAX_ROUNDS=${MAX_ROUNDS:-3}; MINUTES=${MINUTES:-12}; INJECT_AFTER=${INJECT_AFTER:-6}; EXTRA_ROUNDS=${EXTRA_ROUNDS:-1}
+# ARMS is overridable so a cell can be bought one arm at a time. The recovery arm
+# may never trigger (defect #42: the agent rewrites the injected bytes), and a cell
+# without a rewind is not a pair, so the cheap order is C-REC first and D only for
+# the cells that actually rewound.
+ARMS=${ARMS:-"D C-REC"}
+# Cost numbers are only comparable within one model, so the model is printed next to
+# the budget and passed to the preflight as well.
+MODEL=${SBR_MODEL:-deepseek/deepseek-flash}; export SBR_MODEL=$MODEL
+echo "### budget: max_rounds=$MAX_ROUNDS extra_rounds=$EXTRA_ROUNDS inject_after=$INJECT_AFTER minutes=$MINUTES"
+echo "### model: $MODEL"
+echo "### arms: $ARMS"
 
 echo "### preflight $(date +%T)"
 PROBE=$(cd /tmp && echo "只回复两个字：收到" | timeout 90 opencode run --format json --yolo \
-        --model deepseek/deepseek-flash 2>&1 | tail -3)
+        --model "$MODEL" 2>&1 | tail -3)
 if grep -qiE "Insufficient Balance|statusCode\":402|quota" <<<"$PROBE"; then
   echo "PREFLIGHT FAILED: 凭据不可用 —— 不启动批次"; exit 3
 fi
@@ -38,7 +53,7 @@ echo "preflight OK"
 for rep in "${REPS[@]}"; do
   for spec in "${FAMS[@]}"; do
     task="${spec%%:*}"; recipe="${spec##*:}"
-    for arm in D C-REC; do
+    for arm in $ARMS; do
       # Skip a cell that already has a live sample: a run with provider steps.
       # Replying "ok" to nothing is cheaper than paying twice for the same cell.
       done_cell=$(python3 - "$task" "$arm" "$rep" <<'PY'
@@ -56,6 +71,13 @@ PY
       if [ -n "$done_cell" ]; then
         echo "### skip $task $arm rep $rep (have $done_cell)"
         continue
+      fi
+      # Stop at a cell boundary instead of killing the loop: a killed driver leaves
+      # its lh-harness child running and billing with nobody left to write the
+      # manifest, which is how 0.028885 USD became zero samples (defect #44).
+      if [ -f "$HOME/sbr/STOP" ]; then
+        echo "### STOP 文件存在：不启动新 run，批次在此退出 $(date +%T)"
+        exit 5
       fi
       echo "### $task $arm rep $rep start $(date +%T)"
       python3 arm_c.py --task "$task" --arm "$arm" --recipe "$recipe" --rep "$rep" \

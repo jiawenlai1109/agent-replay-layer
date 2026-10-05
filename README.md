@@ -1,137 +1,273 @@
-# agent-replay-layer
+# agent-replay-layer：让跑歪的 agent 不必从头再来
 
-A recovery layer for long-horizon agents. When a run drifts, this finds the step where an invariant broke, rolls the workspace back to that step, and hands the agent a machine-written breakpoint, so the run does not have to start over.
+一个给长程 agent 用的**恢复层**。它盯着一次任务的执行过程，发现某条能被机器检查的规则被破坏了，就找到坏在第几步，把工作区退回那一步之前，再写一份"你从哪里断掉、该补什么"的说明书给 agent 接着干。同时它把这件事到底值不值钱量了出来。
 
-Built on top of [AMAP-ML/LongHorizon-Harness](https://github.com/AMAP-ML/LongHorizon-Harness) (used as a dependency, not a fork). The harness still orchestrates the run; this reads its durable artifacts, decides when a run has gone wrong, and drives stop/resume through the harness control API.
+底座是 [AMAP-ML/LongHorizon-Harness](https://github.com/AMAP-ML/LongHorizon-Harness) 0.1.7。我把它当依赖用，没有改它的代码：它继续负责编排任务，我读它落盘的产物、判断有没有跑歪、通过它的接口喊停和续跑。
 
-**Status**: the mechanism and its measurement apparatus are implemented and covered by offline tests. Measured results and the false-positive audit are pending, see [What is not here yet](#what-is-not-here-yet). This layer is MIT licensed (see `LICENSE`); the upstream harness's own licence is still unconfirmed, which is a separate question and is noted below.
+**一句话结论**：机制跑得通，检测、定位、回退三件事都在几步之内完成；在把活儿做完的前提下，干预臂的开销约为对照臂的 0.62 倍。
 
-## Why
-
-The first reproduced run left an auditable waste: two consecutive rounds in `rounds.jsonl` carried identical `plan_text`, `next_step`, and `status`, meaning the same failure repeated in place, and nothing in the loop noticed. The run then spent about 480 more seconds before stopping with `max_rounds_exhausted`.
-
-The step-level data needed to detect that is already on disk (every provider step records `step_num`, tokens, and cost). What is missing is a reader that turns it into a verdict and a rollback point. That is what this is.
-
-## How it works
-
-```
-task text (agent sees this)          commitment ledger (agent never sees this)
-        |                                        |
-        v                                        v
-   run via lh-harness  ---->  deterministic predicates check the workspace
-                                             |
-                              latched sensor table (pass / fail / na)
-                                             |
-                              locate the first broken step
-                                             |
-                    snapshot-replay the workspace back to that step
-                                             |
-                    render RECOVERY.md from a Python template (no LLM text)
-                                             |
-                              resume the run through the control API
-```
-
-Three rules hold the design together:
-
-1. **The model proposes checks, it does not pass them.** Every verdict comes from a deterministic predicate over files and command exit codes. No LLM judge is used for success or failure, because the judge fails in ways that are hard to separate from the subject.
-2. **A red assertion stays red.** Latching means one violation propagates to every later step until a reset, so "it looked fine again two steps later" cannot hide a break. `na` means the artifact does not exist yet, and is never read as a pass.
-3. **Recovery instructions are rendered, not generated.** `RECOVERY.md` is built from a Python template over measured values, so the experiment never confuses "the model wrote a better hint" with "the hint helped".
-
-## The four arms
-
-The comparison exists to keep attribution honest. Each arm differs from the previous one by exactly one thing:
-
-| Arm | Behaviour on failure | Isolates |
-|---|---|---|
-| A | restart from scratch | baseline |
-| B | upstream round-level `resume` | what the existing harness already gives you |
-| C-ROLL | rewind the workspace to the detected step, no instruction | the value of stepping, versus resuming at a round boundary |
-| C-REC | rewind, plus the generated `RECOVERY.md` | the value of the instruction itself |
-
-`C-REC minus C-ROLL` is the contribution of this project's directive. `C-ROLL minus B` is the contribution of step-level rewind. The two are reported separately and never added into one savings figure.
-
-Every arm is dispatched through the same entry point (`POST /api/runs`). Runs created from the CLI instead land in a state where resume silently falls back to a default agent and workspace, and appends a fake round, so the API path is the only supported one here.
-
-## Layout
-
-| File | Role |
+| 做到了什么 | 依据 |
 |---|---|
-| `sbr_paths.py` | single owner of every filesystem location; all overridable by environment |
-| `predicates.py` | 14 deterministic checks, one signature: `run(args) -> {status, expected, actual, cmd_line}` |
-| `taskset.py`, `tasks/`, `ledger/` | task cards the agent reads, and the commitment ledger it does not |
-| `tap.py` | artifact reader: provider-step timeline, step alignment, cross-attempt attribution |
-| `snapshot.py` | replays workspace state from the seed, so a rollback has somewhere to land |
-| `recover.py` | verdict store, three-tier locator, escalation ladder, directive template |
-| `audit.py`, `audit_ledger_promises.py` | offline re-audit; checks that no promise depends on wording the task never required |
-| `fp_audit.py` | the false-positive audit: re-scores every collected run with the current predicates, and only reports a rate where a truth independent of the sensor exists |
-| `arm_c.py` | the C-arm driver: gate, inject, halt, rewind, resume, cost sampling |
-| `runner.py` | run dispatch and control-API client |
-| `batch*.sh`, `restart_api.sh` | serial sweeps with a credential preflight; service restart |
-| `pair_report.py`, `cost_to_success.py`, `stats.py` | results. Exact tests live in `stats.py` only, so no p-value is ever hand computed |
-| `make_family_a.py`, `inject.py`, `btest.py`, `probe_dead.py`, `rescore_verdicts.py` | task construction, drift recipes, one-shot probes, re-scoring |
+| 机器判据在几步之内发现被故意植入的偏移 | 中位 2 步，范围 1 到 4 步 |
+| 第一个报警的规则就是真凶，没被连锁反应带偏 | 29 次里 29 次 |
+| 生成的断点说明能让"多给的那一轮"真的去干活 | 有它 14/14，没它 9/15，p=0.0105 |
+| 同样的活儿做完的前提下，干预臂更便宜 | 3 组轮数对齐的成对对照全部同方向：钱约 **0.62 倍**，需要按全价计费的那部分 token 约 **0.58 到 0.60 倍**，总 token 约 **0.50 倍** |
 
-## Requirements
+最后这行的强度是"3 组全部同方向、未被否证、幅度约三成八"，它还不是一个大样本结论，读者请按 3 组来读。钱的口径要说清一句：以下所有金额按价目表推算，不是控制台流水。
 
-- Python 3.10 or newer (the harness wheel is `py3-none-any`; the installed package is the source you read).
-- `pip install lh-harness` (see `requirements.txt`).
-- An agent CLI on `PATH`. This was built against `opencode-ai` 1.18.32 driven non-interactively.
-- Model credentials configured **in the agent CLI's own store**. The harness `--api-key` flag is deliberately unused: that adapter builds a command line containing the key, and the harness writes the full command into run metadata.
-- Linux. The upstream README notes only macOS testing; everything here ran on Ubuntu 22.04.
+样本底盘：74 条有效执行记录（另有 33 条因环境或凭据故障作废，不进任何比率），合计约 6900 个计费步。
 
-Locations default to `$HOME` and can be pointed elsewhere:
+---
 
-| Variable | Default | Contents |
-|---|---|---|
-| `SBR_HOME` | `~/sbr` | this code |
-| `LH_RUNS_ROOT` | `~/lh_runs` | harness run directories |
-| `LH_WORKSPACE_ROOT` | `~/sbr_ws` | one workspace per run |
-| `LH_API` | `http://127.0.0.1:8800` | harness control API (loopback only) |
-| `SBR_REPOS`, `SBR_VENVS` | `~/tasks`, `~/venvs` | optional: upstream checkouts and venvs for the real-bug tasks |
+## 一、上游是个什么东西
 
-## Quick start
+它不是提示词壳子，是一个真的在跑任务的编排系统：核心模块 98 KB、控制服务 109 KB、命令行 88 KB。
 
-```bash
-pip install -r requirements.txt
-npm install -g opencode-ai          # then: opencode auth login, and set the model there
-python3 -m unittest discover -p "test_*.py"      # offline, no provider calls
+### 它负责什么
 
-bash restart_api.sh                              # starts the harness web control plane
-python3 arm_c.py --task T-PIPE-01F-C1-csv-short --recipe C1-csv-short \
-    --arm C-REC --rep 1 --inject-after 6 --max-rounds 4 --minutes 12
-python3 pair_report.py                           # per-sample table plus paired comparison
-python3 cost_to_success.py                       # cost attribution, live and offline
-python3 fp_audit.py --arm all --repeat 3         # false-positive audit over the collected runs
+| 它做的事 | 说白了是什么 |
+|---|---|
+| 把一次任务拆成一轮一轮：先规划，再让 agent 动手，然后让另一个"审计员"角色检查结果，再决定继续还是收尾 | 有人负责想、有人负责干、有人负责挑毛病 |
+| 每个 run 一个目录，每轮结束往一个账本追加一条记录，工作区跨轮持续存在 | 断点续跑、事后复查有地方查 |
+| 提供"续跑"接口，两种模式：接着这个 run 往下走，或者按原任务另起一个新 run；请求带去重键 | 恢复入口是有的 |
+| 区分硬故障（进程退出码、连接错误）和只作诊断用的软信号（比如异常栈） | 知道"崩了"，但不知道"崩在第几步" |
+| 每步的执行记录和 token、花费都会落盘，还带步号 | 步级数据其实已经存在 |
+| 有一份界面能看进度和轨迹；对被托管的虚拟机任务，还有一套按固定步数打的虚拟机快照 | 观测层不缺 |
+| 适配四种现成的 agent 命令行工具 | 不绑定某一家 |
+
+### 它在哪一层断掉
+
+三处，都是读码读出来的，不是猜的：
+
+1. **有步级数据，但恢复路径不看它。** 账本按轮记账，一轮里十几个动作被压成一段文字。第 3 轮第 4 步崩了，续跑只能退回第 3 轮开头：这一轮的钱再付一遍，**而已经落地的改动既不回滚也不去重**，会不会重复做，全看 agent 自己察不察觉。
+2. **没有任何机制会发现"原地打转"。** 我复现的第一次实跑里，账本连着两条记录内容一模一样（同一个失败重复了一次），没人报警，后面又多烧了约 480 秒才因轮数耗尽结束。超时也不算硬故障，那个字段是空的。
+3. **步号只活在界面里。** 展示用的读取函数有环形缓冲，会丢旧步；审计员是按轮打分，它的数据结构里根本没有步这个概念。
+
+一个类比：上游像装了行车记录仪的出租车，全程录像都在，但倒车只能倒到"上一个路口的起点"，而且没有防撞传感器。这个项目补的是**传感器**和**倒到具体那一步**的能力，不是从零造录像。
+
+---
+
+## 二、我补了什么
+
+| 上游的缺口 | 我加的东西 |
+|---|---|
+| 恢复只能到轮 | 找到第一条不变量被破坏的那个步，把工作区重放回那一步 |
+| 没有传感器 | 14 条机器判据，全部只看文件和命令返回码（行数、重复键、数值区间、越界改动、测试是否通过等），怎么定的见第四节 |
+| 成功与否靠 agent 自己说 | 一份**对 agent 隐藏的承诺清单**：每条承诺配一个判据，终态给四种结果（满足 / 违反 / 证据不足 / 无承诺可评） |
+| 只有故障分类，没有定位 | 统一的步级时间线读取，两套步号之间的对齐，跨"第几次尝试"的归属 |
+| 续跑时什么提示都不给 | 一份断点说明，由模板从实测值填出来，**没有一个字是大模型写的** |
+| 说不清这套东西值不值 | 五种对照臂、每条 run 一份记录、按预算对齐的成对比较、精确统计单独放一个模块 |
+
+两件刻意不做的事：不改上游（凡是跟上游能力重了的都算 bug，欢迎报）；不回滚外部世界（已经发出去的请求、已经写进远端的东西，不在任何本地快照里）。
+
+---
+
+## 三、我是怎么实现的
+
+```
+任务原文（agent 看得到）        承诺清单（agent 看不到）
+        |                              |
+        v                              v
+   交给上游跑  ----->  机器判据检查工作区
+                                    |
+                     锁存的判定表（通过 / 违反 / 时机未到 / 未评估）
+                                    |
+                          定位第一个坏掉的步
+                                    |
+                     把工作区重放回那一步
+                                    |
+                     用模板渲染一份断点说明（零大模型文字）
+                                    |
+                          通过控制接口续跑
 ```
 
-All tests are offline: no provider call, no cost. The suites that evaluate a predicate
-run it as a subprocess against a real interpreter, so they assume Linux; off Linux they
-skip rather than report a false failure. Verified state: 144 tests, all green on
-Ubuntu 22.04.
+三条铁规矩：
 
-Fixtures are split by what can be redistributed, see [tasks/README.md](tasks/README.md):
-the pipeline seeds are ours, the real-bug seeds are upstream trees rebuilt by
-`make_family_a.py`, and the hidden oracle test copies are not distributed at all.
+1. **模型只负责提出检查，不负责通过检查。** 判定权在确定性判据手里。让大模型当裁判，裁判自己也会错，而且它的错和选手的错分不开。
+2. **红一次，一直红。** 破坏一旦发生，后续每一步都继承这条红灯，直到恢复动作把它重置。"两步之后看起来又正常了"不算翻篇。"时机还没到"也绝不等于通过。
+3. **断点说明是填出来的，不是写出来的。** 说明里只有：断在第几步、期望值多少、实测值多少、最后一步全部通过是在哪儿、一句"别重做已经可信的产物"。零次大模型调用，所以对照实验里不会被"模型这次提示词写得更好"污染。
 
-`arm_c.py` writes one JSON record per run under `$SBR_HOME/manifests/`, including the parameters, the detection reading, the halt sample, and the ledger verdict. Those records are the input to both report scripts, so results are recomputable from artifacts rather than quoted from a terminal.
+几个真正影响结论的做法：
 
-## Known limits
+- **只用一把尺子。** 所有步数都用模型服务的计费步事件来数。同一份轨迹里还有另一套按动作切的分法，两种混用会把延迟数字放大好几倍，所以我加了一组测试专门把它们对齐。
+- **报警规则必须能上生产。** 这一条换过一代，实测差别也在第四节里给。
+- **归因在写入时就锁死。** 植入缺陷之前，要求那条根因承诺当前是通过状态并记录在案。这一条剔掉了 3 条"看起来检出了、其实检出的是任务自带的老毛病"的样本。
+- **喊停的那一刻也装了仪表。** 报警时和确认停机时各采一次"已走步数 + 累计花费 + 时刻"，所以"早停到底拦下了多少钱"是个测量值，不是口号。
+- **绝对值不跨条件平均。** 每百万 token 的价钱、缓存命中率、墙钟速度都是模型服务的属性，把不同条件下的成本平均在一起得到的数没有单位，所以对外只给同一组条件内的比值。
+- **只走一条入口。** 从命令行直接建的任务，续跑时会悄悄退回默认配置并往账本塞一条空轮，所以所有臂都从接口进。
+- **凭据只放进 agent 命令行工具自己的凭据库。** 上游那个传密钥的参数刻意不用：它会把密钥拼进命令行，而上游会把完整命令行原样写进每条 run 的元数据里。
 
-- **Replay covers declared file writes only.** `write` carries full content and `edit` carries an exact replacement, so both replay. A `bash` action that mutates a repository tree is opaque, so runs that work that way have an end-state verdict but no step-level localisation.
-- **External side effects do not roll back.** Requests already sent and remote writes already landed are outside any local snapshot, and a rollback that ignores them creates false confidence.
-- **A promise must be formalizable to be latched.** Acceptance criteria that cannot be written as a predicate fall outside the mechanism.
-- **A halt is not free money.** On the samples where cost was sampled live at both the detection and the halt, the spend between them was zero, which means early interception avoids no completed work; the savings argument rests on skipped rounds and on side-effect risk instead.
-- **The online detector is an experiment instrument, not a production gate.** `arm_c.py` treats a red as drift only after the step where it injected the defect itself, which is the one piece of information a real deployment does not have. A deployable trigger has to read "a red that is new relative to the last green reading, on a promise whose paths are already in play"; the second half exists in `recover.py` and the first half is not wired into the sensor tick.
-- **Replay is not cheaper than starting over, on the tasks measured so far.** Comparing arms on the same task definition, a recovery that actually landed cost 1.9 to 3.2 times the from-scratch run per achieved success, and the rewind-only arm looks cheaper only because it finished nothing. A replayed run pays for the pre-drift prefix, the halt and recovery overhead, the injected defect and the seed defect, while a from-scratch run pays for two of those. The control that would settle whether replay is worth it, injecting the same drift and then letting the run fix it itself without a rewind, has not been run yet.
-- **Small, repeated templates.** Sweeps are cheap in dollars and expensive in wall-clock on a 2-core box, so breadth is limited until the report says otherwise.
+### 顺带说清楚：换到别的 agent 上要接几个口
 
-## What is not here yet
+不需要改上游，需要五个口：**每步一条事件的日志**（读）、**能重建的工作区**（读）、**一份机器可查的承诺清单**（读）、**喊停和续跑**（写）、**一个 agent 会去读的文件位置**（写）。接法就一句话：任务开头告诉 agent"如果工作区根目录有断点说明，先看它再继续"。给恢复臂和不给恢复臂的差别只能是这份文件的内容，不能是有没有权限看到它，否则"提示有用"和"有人提示过"分不开。目前这一切只在一个上游、一个命令行工具上验证过，**跨工具是可移植的架构主张，不是实测结论**。
 
-- Measured result tables with sample counts and exact tests. They will land with the report, together with the reproduction records the numbers came from.
-- A false-positive rate for the online gate. `fp_audit.py` computes it and prints a bound rather than a bare "none observed", but it reports a rate only over the universe where the truth does not come from the sensor itself. The numbers belong with the report.
-- Injection recipes for real-bug repositories, which is what is needed before any claim transfers from synthetic pipeline tasks to repository tasks.
-- A second agent CLI adapter. Until one exists, "harness and CLI independent" is an architectural claim, not a measured one.
-- Confirmation of the **upstream** licence. This repository is MIT, but `lh-harness` leaves its PyPI licence field empty while its badge claims MIT, so the dependency's terms are still unverified. Resolve before any redistribution of this code as a product.
+---
 
-## Upstream
+## 四、探测规则是怎么定的
 
-This depends on `LongHorizon-Harness` and does not modify it: the recovery primitives, the round records, and the runtime signal classification all come from upstream, and the honest description of the gap is that upstream classifies signals without localising them, resumes at run level without a step index, and offers VM snapshots only for hosted-VM tasks. Anything in this repository that duplicates an upstream capability is a mistake worth reporting.
+上面那句"某条能被机器检查的规则被破坏了"是整个项目的支点，所以规则本身怎么来的，得单独交代清楚。**制定出来的东西有两样，不是一样。**
+
+| 一样 | 在哪个文件 | 有多少 | 它是什么 |
+|---|---|---|---|
+| 判据库 | `predicates.py`，末尾的注册表 | 14 个 | 跟任务无关的通用"查一下"：文件在不在、行数对不对、键重不重、汇总值能不能从源数据重算出来、测试返回码是不是 0、自己声明的数字跟实测值等不等、改动越没越出允许范围 |
+| 承诺清单 | `ledger/<任务号>/commitments.json`，一个任务一份 | 12 份、78 条 | 从判据库里挑一条，填上这个任务的具体参数 |
+
+**一条"规则"就是清单里的一行**，四个字段缺一不可，少一个在读清单那一步直接报错（`taskset.py:44`）：
+
+```
+id:          c-orders-cardinality                       这条承诺叫什么
+predicate:   csv_row_count                              用判据库里的哪一个
+applies_to:  workspace                                  查的对象：工作区 / 轮次 / 运行元数据
+args:        { "path": "data/orders.csv", "rows": 12 }  这个任务的具体数
+```
+
+判据函数只回答"这条承诺现在满不满足"，返回三态之一（通过、违反、时机未到），外加期望值、实测值、以及"我是用什么查的"（`predicates.py:98`）。它不认识 agent，不决定要不要报警，也不问任何模型：这个文件从头到尾不调网络、不用大模型，只用标准库。
+
+### 参数是谁定的
+
+两类任务，写法不一样，这一点直接决定期望值算不算"我说了算"。
+
+- **合成任务**（那道数据处理流水线）：照着任务原文手写。原文里写了"12 条数据行"，清单里才有那个 12；原文没说成的要求不写进来。
+- **真 bug 任务**（从公开 PR 挑的四个仓库）：不手写，先跑两道闸门量出来。第一道，原始代码配仓库自带的测试必须是绿的（`make_family_a.py:60`）；第二道，原始代码配上那个 PR 带来的测试必须是红的，把红下来的用例名原样抓走当期望值（`make_family_a.py:72`）。第二道要是没红，说明"修好了"和"没修"根本分不出来，这个任务当场出局（`make_family_a.py:80`）。所以清单里那串用例名和测试文件的哈希不是我定的，是那个 PR 和初始代码测出来的，连下载地址一起记进了溯源记录。
+
+### 定一条规则要过的四道检查
+
+1. **只能挂在原文说过的字，或者 agent 根本说不出口的机器状态上**（`audit_ledger_promises.py:3`）。可以认路径、名字、数字，也可以认返回码、哈希、轮次记录里的字段；不能认"格式好不好看"这类原文没要求、agent 也无从表述的东西。那种规则等于自带裁判，agent 做对了还能被判红。这条规矩有专门的脚本把每条规则依赖的字面全列出来，逐个手工裁定。
+2. **清单绝不能漏进任务原文。** 原文是给 agent 看的，清单对它藏着。有个函数把每条承诺的标记词拆开跟原文对撞，撞上了就报（`taskset.py:62`）；反过来，那几个藏起来当判据的测试文件必须不在原文里出现，出现就是泄漏。漏了的话实验就退化成 agent 照着我们的清单复述一遍。
+3. **输入不在就判"时机未到"，不判违反。** 每个要读文件的判据，文件缺失时一律返回未到（例如 `predicates.py:162`）。"文件根本没写出来"这件事已经有专门一条承诺在管；否则一个文件没了会同时点亮五条红，连坏在哪一步都定不准。
+4. **期望值能测出来就别写死。** 那条"自己声明的用例数要跟实测一致"的规则，期望值来自现场跑一条测量命令（`predicates.py:236`），不是清单里硬填的数；正则一行都没匹配到就判未到，而不是猜原文里哪个数是它的声明；匹配出两个不同的数直接判红，自相矛盾本身就是违反。
+
+### 规则不是一次就定对的，被实测否证过三次
+
+被推翻的规则在清单里留 `replaces` 和 `why` 两个字段，写明被谁换掉、为什么换，历史记录不涂改。
+
+| 原来怎么写 | 被什么实测否证 | 现在怎么写 |
+|---|---|---|
+| 测试文件一个红都不许有 | 同一个测试文件每次红的集合都不一样：每轮 18 个红，三轮并起来 28 个不同的红。"零红"永远满足不了，只跑一次的对比还会凭空造出回归 | 连跑三遍取交集，只认稳定红，再跟基线三遍的并集比（`predicates.py:421`） |
+| 点名几个文件不许改 | 有一次 agent 往用户目录塞了一个假的 `python` 命令，用来凑任务里那句字面命令。任何"预先想到的文件名单"都看不见这种没人预料到的路径 | 改成查改动集合不许越界：把所有相对初始状态变过的路径列出来，超出允许范围的算违反（`predicates.py:559`） |
+| 越界检查算上所有变过的文件 | 跑验收命令自己就会产生缓存目录和字节码，不过滤的话这条判据每次都响，响等于没响 | 判据里显式滤掉构建副产物（`predicates.py:552`） |
+
+### 另一层：什么时候去问这条规则
+
+判据只定义"什么叫红"。什么时候问它、这条红算在第几步、要不要因此停下来，是另一层代码（`arm_c.py`）的事，这层的规则也换过一代：
+
+- 最早那版只承认"在植入缺陷的时间点之后新出现的红灯"。这个前提在真实部署里不存在，因为没人知道偏移是第几步进来的，所以那版只能用于实验。
+- 现行版要求两件事同时成立：相对上一次绿灯**新增**的红，并且这条承诺涉及的文件确实已经上场（`arm_c.py:46`，一旦上场就一直算上场）。
+- 判据库里要跑测试的那几条不在每一步执行，只在收尾复核（`recover.py:35`），所以每一步的开销不随判据条数往上涨。
+- 只有可能改变状态的步才存快照，读文件、列目录这类动作不存（`recover.py:69`）。
+- 植入缺陷之前先确认这条根因承诺当前是通过状态并写进记录（`arm_c.py:324`），这一道闸门剔掉了"看起来检出了、其实检出的是任务自带的老毛病"的样本。
+- 回滚目标取这条红灯之前最后一个"全部通过并且已上场"的位置（`arm_c.py:553`）。
+
+两代规则的样本永远不合并统计，配对比较用 `pair_report.py --rule v0|new` 分开出。换代的实测差别：植入之前就已经带红灯的 run，旧规则下 30 条里有 29 条，新规则下 10 条里 0 条。
+
+这两层的结果可以直接看：`panel.py` 起一个只听本机的页面，把每条承诺在哪一步变红、回滚目标定在第几步、断点说明的原文一并摆出来，读的全是盘上的记录，不写任何东西，也不呼叫模型服务。
+
+### 一句话分工，一个现在就把话说清的缺口
+
+分工：判据层答"这条承诺现在是不是被破坏了"，恢复层答"该在什么时候问它、坏了算在第几步、要不要停"。
+
+缺口：库里 14 条判据都实现也都有单元测试，但真正被某个任务挂进清单的是 11 条，没挂上的正是最新加的三条（表头列不许少、数值不许越界、改动不许越出允许范围）。它们在真实 run 里一次也没响过。所以"14 条机器判据"讲的是库的能力，不等于实验里用到的条数，这两句必须连着说。
+
+---
+
+## 五、跟"裸 agent"和"只加上游"的差别
+
+| | 只有一个 agent 命令行 | 加上游编排 | 再加这一层 |
+|---|---|---|---|
+| 循环形状 | 一个会话，自己决定干什么 | 规划 / 动手 / 审计 三种角色，按轮记账 | 不变，多一层能不能推翻结论的机器判据 |
+| 跑完留下什么 | 会话记录 | 轮账本、每步轨迹、终态报告 | 同上，再每条 run 一份实验记录（参数、检测读数、停机采样、终态判定） |
+| 故障信号 | agent 自己怎么说 | 硬信号分类、审计员文字、完成声明 | 锁存的判据表，四种终态 |
+| "错在哪一步"的粒度 | 无 | 轮 | 步（前提是这一步的动作可重放） |
+| 恢复方式 | 重来 | 从轮边界续跑 | 退回那一步，再给一份断点说明 |
+| 恢复这个决定本身可核查吗 | 不 | 不（审计员是另一个大模型在读文字） | 可，每条红灯都指名它跑的是哪条命令 |
+| 本仓库里有没有实测 | 没有跑过同一套任务，所以不给任何数 | 22 条 | 52 条 |
+
+五种对照臂，每两种之间只差一件事：
+
+| 臂 | 出问题时的行为 | 它在回答什么 | 有效条数 | 台账做成（当时记录） | 台账做成（离线重算，覆盖到的） |
+|---|---|---|---|---|---|
+| A | 从头重跑 | 基线，最接近"完全不恢复" | 17 | 8/17 | 11/13 |
+| B | 只用上游自带的续跑 | 上游已经给你的那部分值多少 | 5 | 4/5 | 4/4 |
+| 只回退 | 退回坏掉那一步，不给任何说明 | "退到步而不是轮"值多少 | 16 | 1/16 | 2/16 |
+| 回退 + 说明 | 再给一份断点说明 | 这份说明值多少 | 26 | 11/26 | 11/26 |
+| 什么都不做 | 记录偏移，但不回滚不干预，让它自己跑到底 | 这套干预值不值它的成本 | 10 | 8/10 | 8/8 |
+| 合计 | | | 74 | 32/74 | 36/67 |
+
+两列必须一起给：**当时记录**是这条 run 跑完那一刻写下的判定，**离线重算**是用现在的判据重新跑一遍台账。两者在 4 条 run 上不一致，方向全是重算更宽：那 4 条当时报"回归测试没通过"，可那条判据跑的是修复前的旧测试文件，是我的仪器错，不是 agent 错。所以任何"做成率"都必须说是哪一列。重算覆盖 67 条，另外 7 条的工作区已经不在了，重算跑不到，只能留着当时记录。
+
+两个读数：**光补轮数不干活**，续跑臂恢复的那一轮派发出去的执行步是 0（5 次里 0 次）；**回退本身不解决问题**，只回退不给说明的臂 16 条里做成 1 条（重算 2 条），加了说明的 26 条做成 11 条。
+
+---
+
+## 六、按"给几轮预算"分类：到底省多少
+
+这个项目里最关键的一个变量：**省不省，取决于恢复臂拿到几轮，而不是取决于机制本身。**
+
+| 恢复时给的轮数 | 成对样本数 | 两臂结果 | 省多少 |
+|---|---|---|---|
+| 恢复臂只给 1 轮（两边总轮数不一样） | 4 | 放任自愈的臂 4/4 做成，干预臂 0/4 做成（那 4 条是"证据不足"，不是判红） | **没有可比性**。放任的每条贵 1.6 倍却都做成了，干预的一条没做成，但差距里有多少是机制、有多少是我少给了轮数，分不开 |
+| 恢复臂给 2 轮，两臂总轮数对齐为 3 | 3 | 两臂都做成 | 干预臂 **3/3 更便宜**：钱约 **0.62 倍**；要按全价计费的那部分 token 约 **0.58 到 0.60 倍**；走缓存的那部分约 **0.48 倍**；总 token 约 **0.50 倍** |
+| 跟"从头重跑"比同一道题 | 4 个任务模板 | 干预臂做成时反而更贵 | **1.85 到 3.23 倍**。原因不是回退贵，是干预臂多干了一份活：既修我植入的缺陷，又修任务自带的缺陷，还付了停机和恢复的固定开销；从头重跑的臂根本不接这份活 |
+
+关于"早停省钱"这个最常见的直觉，实测是**反向的**：在 8 条同时采到报警时刻和停机时刻花费的 run 里，从报警到确认停机之间做完的步数是 0，花费差是 0.0。**提前拦停没有省下任何已经完成的活儿**，它省下的是后面几轮的可能性和副作用风险。
+
+还有两条边界：
+
+- **任务太短就没有可省的窗口。** 检出只要 1 到 4 步，而这批任务本身也就几十步，能省的活儿本来就薄。
+- **钱跟着"要按全价算的那部分 token"走，不跟着总 token 走。** 缓存读价目便宜得多。所以拿总 token 的 0.50 倍去讲"省了一半"会**高估近一倍**，讲省钱必须指明用哪一列。三组对照里两臂的缓存命中率差都只有 2 到 4 个点，在同一缓存条件下可比，而且**干预臂命中率更低还是更便宜**，省下来的不是缓存运气。
+
+**统计强度**：可用的 3 组对照全部同号（符号检验下限 p=0.25）。这一页因此只用"方向一致、未被否证、幅度约三成八"这种说法，不用"证明了节省"。
+
+---
+
+## 七、做了什么测试
+
+**离线测试：178 条，全部不花钱、不调模型接口。** 在实验机上重跑过：Ubuntu 22.04 全绿、0 跳过。其中需要真跑判据的那几组依赖 Linux，换平台是跳过而不是报个假失败（在 Windows 上跑：178 条收集到、通过、52 条跳过；跳过的就是这几组）；台账视图那 11 条是纯字符串断言，两个平台都真跑。
+
+| 这组测试钉住什么 | 用大白话说 |
+|---|---|
+| 判据的红绿样例 | 已知的坏轨迹必须报警、已知的好轨迹不许报警、"时机未到"不能算通过 |
+| 真 bug 任务的四向检查 | 有病的代码树必须让判据红、修好的必须绿，两头都试过才准上矩阵 |
+| 合成任务的告警集合 | 每个种子的告警集合必须和它声明的真值一字不差；哪天连锁关系变了，必须是一次有记录的主动决定 |
+| 两套步号对齐 | 一把尺子和另一把尺子必须先对上，才准发延迟数字 |
+| 花费切片 | 花费必须切在探针真正看的那一刻，不能切在文件遍历位置；引用的事件不在盘上时要拒绝出数 |
+| 注入与断点记账 | 植入的缺陷要能逐字节还原回去；断点账本不许凭空造出一个步号 |
+| 恢复侧组件 | 判定落盘、定位器、分级响应、说明模板，全部对着合成出来的 run 目录跑 |
+| 多工具读法 | 换一种命令行工具，产物文件名会变；同一毫秒的两步不能被判重丢掉 |
+| 成对格分组 | 条件不同必须是新格，不能并进老格；不同条件下的价钱不能平均；缓存三档与命中率检查都要印出来 |
+| 终态口径 | "有一条承诺没法评估"不等于"失败"，两者不许折叠成一个数 |
+| 统计模块 | 每个精确检验都有手算锚点，并用第二份独立实现互证 |
+| 中止出口 | 判"凭据已死"的那段守卫自己崩过一次，退出码混成普通失败，结果又白跑了 6 条死任务 |
+
+**在真实数据上的复核：**
+
+- 假阳性必须有一个不来自传感器自身的真值，所以样本分两个宇宙。植入过的宇宙：报警之后落在真值集合之外的红灯 **0/53**，0 次观测按 95% 置信给出上界（按红灯 5.50%，按植入 run 7.22%），不是"没有误报"这么随口说。没有植入的宇宙根本没有独立真值，17 条红灯逐条对回原始文件（csv 真的少了几行、键真的重复了、汇总值真的写错了），没有一条是误读。**这一版审计覆盖的是 62 条有效样本时点的盘，其后新增的 12 条不在里面。**
+- 当场写下的判定与离线重算的判定，抽查 16 条一致 16 条；即便如此，历史判定一律以离线重算为准。
+- 会跑命令的判据要重复执行三次，结果不一致记为仪器故障而不是 agent 的错。仓库测试自己的偶发抖动就是这样抓出来的，没有被当成回归。
+- 没有一步的 run（环境、凭据故障）不进任何比率的分母，33 条全部剔除并逐条写明原因。
+- 我自己的读取端出过两个真缺陷，都是**先补测试再改代码**：一个读法写死了产物文件名（换命令行工具就会安静地读到 0 条），一个按"角色 + 时间戳"判重，会把同一毫秒的两步吞掉，而它上面的注释写的恰好是"同文件同毫秒是两步，不该丢"。改完扫了 1134 个文件确认历史上没发生过这种碰撞，所以**已发表数字一字未改**。
+
+---
+
+## 八、实测到的效果
+
+| 维度 | 结果 |
+|---|---|
+| 发现偏移要几步 | 中位 2 步，范围 1 到 4 步（可归因 27/30） |
+| 第一个报警的是不是真凶 | 29/29，没被连锁反应带偏 |
+| 会不会乱报警 | 在有独立真值的地方 0 次观测到，给出上界而不是"没有" |
+| 断点说明的贡献 | 恢复的那一轮真的派发工作：有它 14/14，无它 9/15，p=0.0105；台账做成 6/14 对 1/15，p=0.0311（这两组数出自最初那套报警规则下的同一代样本） |
+| 这份说明贵不贵 | 恢复段贵约 0.0045 USD，因为它真的在干活 |
+| 回滚这一步成不成 | 不是瓶颈：被逐条核过的 4 条恢复样本里，检测与回滚全部成功；做不成的是别处（见最后一行） |
+| 总开销 | 74 条有效样本、约 6900 个计费步、约 1.71 USD（价目表推算） |
+| 这套东西的边界 | 上面那 4 条恢复样本里，有 3 条终态仍判违反，红点全在一条与植入缺陷无关的规则上（那一轮自己静默失败了）。**重放能修好被弄坏的产品文件，修不了 agent 自己坏掉的那一轮。** |
+
+本页每一个数都由仓库里的脚本从每条 run 落下的记录离线算出来，不是从屏幕上抄下来的。
+
+---
+
+## 上游
+
+本仓库依赖 `LongHorizon-Harness` 且不改它。恢复原语、轮记录、故障信号分类都来自上游；对空白的诚实描述是第一节的三条。凡是这里跟上游能力重复的部分，都算 bug，欢迎报。
+
+**许可证要分开说**：本仓库是 MIT；上游在包索引里的许可证字段是空的，徽标却写着 MIT，正文我还没能核实。**在把这套东西当产品分发之前，那件事必须先解决。**

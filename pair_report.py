@@ -39,7 +39,7 @@ OUT = sbr_paths.RESULTS / "pair_report.csv"
 def rep_of(run_id: str) -> str:
     """The rep lives in the arm segment (`...-C-ROLL10-172033` -> "10"), not in
     the trailing timestamp, which is what first made every pair miss."""
-    m = re.search(r"-(?:C-ROLL|C-REC|B|A)(\d+)-\d{6}$", run_id)
+    m = re.search(r"-(?:C-ROLL|C-REC|D|B|A)(\d+)-\d{6}$", run_id)
     return m.group(1) if m else "?"
 
 
@@ -97,6 +97,9 @@ def score(m: dict) -> dict:
         # run whose seed was already red; a v1 run does not. The two are different
         # instruments and must never share one table.
         "trigger_rule": str(m.get("trigger_rule") or "v0_red_after_injection"),
+        # Per-million-token price differs by model, so cost columns are only
+        # comparable within one model.
+        "model": str(m.get("model") or "?"),
         "rep": rep_of(rid),
         "injected_at": inj,
         "detected_at": sen.get("provider_step"),
@@ -118,16 +121,23 @@ def score(m: dict) -> dict:
 def main() -> int:
     argv = [a for a in sys.argv[1:] if not a.startswith("--")]
     rule = None
+    model = None
     for i, a in enumerate(sys.argv):
         if a == "--rule" and i + 1 < len(sys.argv):
             rule = sys.argv[i + 1]
             argv = [x for x in argv if x != rule]
+        if a == "--model" and i + 1 < len(sys.argv):
+            model = sys.argv[i + 1]
+            argv = [x for x in argv if x != model]
     pat = argv[0] if argv else "*C-R*"
     recs = [score(m) for m in rows(pat)]
     recs = [r for r in recs if r["end_verdict"] != "run_missing"]
     if rule:
         recs = [r for r in recs if r["trigger_rule"].startswith(rule) or rule == "all"]
         print(f"-- 只保留触发规则 {rule!r}：{len(recs)} 条")
+    if model:
+        recs = [r for r in recs if r["model"] == model or model == "all"]
+        print(f"-- 只保留模型 {model!r}：{len(recs)} 条")
     if not recs:
         print("no samples for that pattern/rule; nothing to report")
         return 0
@@ -136,6 +146,11 @@ def main() -> int:
         print("!! 同一张表里混了触发规则:",
               {k: sum(1 for r in recs if r["trigger_rule"] == k) for k in rules},
               "—— v0(靠 injected_at) 与 v1(新增红灯) 不可合并引用，请用 [glob] 分开跑")
+    models = sorted({r["model"] for r in recs})
+    if len(models) > 1:
+        print("!! 同一张表里混了模型:",
+              {k: sum(1 for r in recs if r["model"] == k) for k in models},
+              "—— 每百万 token 单价不同，成本数字不可跨模型合并，请用 --model 分开跑")
     OUT.parent.mkdir(parents=True, exist_ok=True)
     with OUT.open("w", encoding="utf-8", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=list(recs[0]) if recs else ["task"])
